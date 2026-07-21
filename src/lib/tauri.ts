@@ -12,3 +12,11 @@ export function listInstalls() {
 export function locateExistingInstall(gameId: string) {
   return invoke<GameInstall | null>('locate_existing_install', { gameId });
 }
+
+export function openInstallFolder(gameId: string) {
+  return invoke<void>('open_install_folder', { gameId });
+}
+
+export function removeInstall(gameId: string) {
+  return invoke<boolean>('remove_install', { gameId });
+}

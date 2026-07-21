@@ -311,24 +311,26 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - Foi implementado o comando `locate_existing_install`, que abre um seletor de diretório via `rfd`, registra/atualiza o caminho escolhido na tabela `installs` e retorna a instalação salva para o frontend.
 - A ação secundária `Localizar instalação existente` no frontend agora chama `locateExistingInstall(gameId)`, atualiza a lista local de instalações e move o jogo para a sidebar de instalados quando o usuário escolhe uma pasta.
 - A localização existente atualmente seleciona diretórios/pastas. Validação de executável específico, verificação de arquivos e ajuste fino por manifesto ainda ficam para próximas etapas.
+- O painel lateral do jogo selecionado agora exibe o caminho salvo da instalação quando existir registro em `installs`.
+- O backend expõe `open_install_folder` para abrir a pasta registrada da instalação e `remove_install` para desvincular/remover o registro local do SQLite.
+- O frontend expõe `openInstallFolder(gameId)` e `removeInstall(gameId)` em `src/lib/tauri.ts` e conectou as ações secundárias `Abrir pasta` e `Desvincular instalação`.
+- Ao desvincular uma instalação, o jogo sai da sidebar de instalados e volta para o catálogo sem remover arquivos do disco.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
 
 Próximo passo recomendado para desenvolvimento:
 
-1. **Melhorar instalações registradas**
-   - Exibir o caminho registrado da instalação no painel de detalhes.
-   - Implementar `Abrir pasta` usando o caminho salvo em SQLite.
-   - Permitir remover/desvincular uma instalação registrada.
-   - Preparar validação por manifesto para confirmar executável/estrutura esperada.
-
-2. **Botão Jogar**
+1. **Botão Jogar**
    - Resolver runner pelo manifesto/configuração.
    - Usar o caminho salvo em `installs`.
    - Montar comando de execução.
    - Fazer spawn pelo backend Rust, não pelo frontend.
    - Registrar sessão para futuro tempo jogado.
+
+2. **Validar instalações registradas**
+   - Preparar validação por manifesto para confirmar executável/estrutura esperada.
+   - Fazer `Verificar arquivos` indicar se a pasta registrada ainda existe e se contém o executável esperado quando esse dado estiver modelado.
 
 3. **Modularizar backend SQLite**
    - Extrair a lógica SQLite atual de `src-tauri/src/lib.rs` para um módulo `database`.

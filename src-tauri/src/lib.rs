@@ -2,6 +2,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +127,28 @@ fn get_install(connection: &Connection, game_id: &str) -> Result<GameInstall, St
         .map_err(|error| format!("Não foi possível carregar a instalação de {game_id}: {error}"))
 }
 
+fn open_path(path: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let mut command = Command::new("xdg-open");
+
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.arg("/C").arg("start").arg("");
+        command
+    };
+
+    command
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Não foi possível abrir o caminho {path}: {error}"))?;
+
+    Ok(())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Olá, {name}! O backend Tauri está pronto.")
@@ -225,6 +248,36 @@ fn locate_existing_install(
     Ok(Some(get_install(&connection, &game_id)?))
 }
 
+#[tauri::command]
+fn open_install_folder(app: tauri::AppHandle, game_id: String) -> Result<(), String> {
+    let connection = open_database(&app)?;
+    let install = get_install(&connection, game_id.trim())?;
+    let path = PathBuf::from(&install.install_path);
+
+    if !path.exists() {
+        return Err(format!(
+            "A pasta registrada para {} não existe mais: {}",
+            install.game_id,
+            path.display()
+        ));
+    }
+
+    open_path(&install.install_path)
+}
+
+#[tauri::command]
+fn remove_install(app: tauri::AppHandle, game_id: String) -> Result<bool, String> {
+    let connection = open_database(&app)?;
+    let removed_rows = connection
+        .execute(
+            "DELETE FROM installs WHERE game_id = ?1",
+            params![game_id.trim()],
+        )
+        .map_err(|error| format!("Não foi possível remover a instalação: {error}"))?;
+
+    Ok(removed_rows > 0)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -232,7 +285,9 @@ pub fn run() {
             greet,
             list_games,
             list_installs,
-            locate_existing_install
+            locate_existing_install,
+            open_install_folder,
+            remove_install
         ])
         .run(tauri::generate_context!())
         .expect("erro ao executar o 2D MMO Launcher");

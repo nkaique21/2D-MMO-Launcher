@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { listGames, listInstalls, locateExistingInstall } from './lib/tauri';
+import {
+  listGames,
+  listInstalls,
+  locateExistingInstall,
+  openInstallFolder,
+  removeInstall,
+} from './lib/tauri';
 import type { GameInstall, GameManifest } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
@@ -123,6 +129,7 @@ function getSecondaryActions(game: GameViewModel): SecondaryAction[] {
     return [
       { id: 'verify-files', label: 'Verificar arquivos', type: 'installedAction' },
       { id: 'open-folder', label: 'Abrir pasta', type: 'installedAction' },
+      { id: 'remove-install', label: 'Desvincular instalação', type: 'installedAction' },
       { id: 'configure', label: 'Configurar', type: 'installedAction' },
     ];
   }
@@ -203,6 +210,10 @@ function App() {
   const selectedGame = useMemo(
     () => games.find((game) => game.id === selectedGameId) ?? games[0] ?? null,
     [games, selectedGameId],
+  );
+  const selectedInstall = useMemo(
+    () => installs.find((install) => install.gameId === selectedGame?.id) ?? null,
+    [installs, selectedGame?.id],
   );
 
   if (isLoading && !selectedGame) {
@@ -289,6 +300,45 @@ function App() {
         });
         setSelectedGameId(install.gameId);
         setActionMessage(`Instalação registrada em: ${install.installPath}`);
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPendingActionId(null);
+      }
+
+      return;
+    }
+
+    if (action.type === 'installedAction' && action.id === 'open-folder') {
+      setPendingActionId(action.id);
+
+      try {
+        await openInstallFolder(selectedGame.id);
+        setActionMessage('Pasta da instalação aberta.');
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPendingActionId(null);
+      }
+
+      return;
+    }
+
+    if (action.type === 'installedAction' && action.id === 'remove-install') {
+      setPendingActionId(action.id);
+
+      try {
+        const removed = await removeInstall(selectedGame.id);
+
+        if (!removed) {
+          setActionMessage('Nenhuma instalação registrada foi encontrada para desvincular.');
+          return;
+        }
+
+        setInstalls((currentInstalls) => (
+          currentInstalls.filter((currentInstall) => currentInstall.gameId !== selectedGame.id)
+        ));
+        setActionMessage('Instalação desvinculada. O jogo voltou para o catálogo.');
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       } finally {
@@ -492,6 +542,15 @@ function App() {
                     <p className="mt-1 font-black">{selectedGame.status === 'installed' ? 'Instalado' : 'Catálogo'}</p>
                   </div>
                 </div>
+
+                {selectedInstall && (
+                  <div className="mt-3 rounded-2xl bg-black/20 p-4 text-sm ring-1 ring-white/[0.08]">
+                    <p className="text-xs text-launcher-muted">Caminho da instalação</p>
+                    <p className="mt-2 break-all font-semibold leading-6 text-white/85">
+                      {selectedInstall.installPath}
+                    </p>
+                  </div>
+                )}
               </section>
 
               <section className="rounded-[1.75rem] border border-white/10 bg-launcher-panel/80 p-3 shadow-2xl shadow-black/30">
