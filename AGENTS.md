@@ -347,7 +347,10 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - `launch_game` passou a chamar `resolve_runner` antes de executar. A execução nativa continua funcionando; Wine/Proton ainda retornam erro orientativo quando resolvidos, até a etapa de spawn via runner ser implementada.
 - `src-tauri/src/runners.rs` agora também expõe `build_runner_command`, que monta o comando final por tipo de runner.
 - `build_runner_command` mantém execução nativa direta e adiciona montagem inicial para Wine como `wine <executável> ...args`.
-- Proton ainda retorna erro explícito pedindo definição de prefixo/`STEAM_COMPAT_DATA_PATH` gerenciado pelo launcher antes de habilitar spawn real.
+- `RunnerCommand` agora carrega variáveis de ambiente específicas do runner e `launch_game` aplica essas variáveis no `Command::spawn`.
+- Prefixos gerenciados por jogo são criados no diretório de dados do app em `compat-data/<game_id>/<runner_kind>`.
+- Wine recebe `WINEPREFIX` apontando para o prefixo gerenciado do jogo.
+- Proton monta comando `proton run <executável> ...args`, recebe `STEAM_COMPAT_DATA_PATH` apontando para o prefixo gerenciado e tenta preencher `STEAM_COMPAT_CLIENT_INSTALL_PATH` quando uma pasta Steam conhecida existe.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -365,8 +368,9 @@ Próximo passo recomendado para desenvolvimento:
 
 3. **Camada de runners**
    - Testar execução via Wine quando houver jogo/instalador Windows simples e Wine disponível.
-   - Definir modelo de prefixo por jogo para Wine/Proton, incluindo diretório persistido no SQLite/configuração local.
-   - Implementar spawn via Proton a partir do runner concreto resolvido, configurando `STEAM_COMPAT_DATA_PATH`/ambiente equivalente.
+   - Validar RavenQuest com Proton usando o prefixo gerenciado criado em `compat-data/ravenquest/proton`.
+   - Persistir configurações avançadas de prefixo/runner no SQLite quando houver UI de configurações por jogo.
+   - Ajustar variáveis de ambiente adicionais de Proton/UMU conforme necessário após teste real.
    - Criar fluxo para instalar/registrar runners gerenciados pelo launcher quando Wine/Proton não existirem no sistema.
    - Implementar suporte progressivo a Wine/Proton para RavenQuest e Archlight.
    - Usar o instalador Windows do RavenQuest como base de teste para Proton/Wine.

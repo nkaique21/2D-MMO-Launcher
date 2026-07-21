@@ -33,6 +33,7 @@ pub(crate) struct RunnerCommand {
     pub(crate) program: PathBuf,
     pub(crate) args: Vec<String>,
     pub(crate) working_dir: PathBuf,
+    pub(crate) envs: Vec<(String, String)>,
 }
 
 fn path_is_executable(path: &Path) -> bool {
@@ -63,6 +64,19 @@ fn find_in_path(binary: &str) -> Option<PathBuf> {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+fn sanitize_path_segment(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn runner_info(
@@ -101,6 +115,35 @@ fn steam_library_dirs() -> Vec<PathBuf> {
         home.join(".steam/root"),
         home.join(".local/share/Steam"),
     ]
+}
+
+fn steam_client_install_path() -> Option<PathBuf> {
+    steam_library_dirs()
+        .into_iter()
+        .find(|steam_dir| steam_dir.is_dir())
+}
+
+fn managed_prefix_dir(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    runner_kind: &str,
+) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        format!("Não foi possível resolver o diretório de dados do app: {error}")
+    })?;
+    let prefix_dir = app_data_dir
+        .join("compat-data")
+        .join(sanitize_path_segment(game_id))
+        .join(sanitize_path_segment(runner_kind));
+
+    fs::create_dir_all(&prefix_dir).map_err(|error| {
+        format!(
+            "Não foi possível criar o prefixo gerenciado {}: {error}",
+            prefix_dir.display()
+        )
+    })?;
+
+    Ok(prefix_dir)
 }
 
 fn discover_steam_proton_runners() -> Vec<RunnerInfo> {
@@ -358,6 +401,8 @@ pub(crate) fn resolve_runner(
 }
 
 pub(crate) fn build_runner_command(
+    app: &tauri::AppHandle,
+    game_id: &str,
     runner: &ResolvedRunner,
     executable_path: &Path,
     install_path: &Path,
@@ -369,6 +414,7 @@ pub(crate) fn build_runner_command(
             program: executable_path.to_path_buf(),
             args: launch_args.to_vec(),
             working_dir: install_path.to_path_buf(),
+            envs: Vec::new(),
         }),
         "wine" => {
             let runner_path = runner.path.as_ref().ok_or_else(|| {
@@ -377,6 +423,7 @@ pub(crate) fn build_runner_command(
                     runner.label
                 )
             })?;
+            let prefix_dir = managed_prefix_dir(app, game_id, "wine")?;
             let mut args = vec![executable_path.to_string_lossy().to_string()];
 
             args.extend_from_slice(launch_args);
@@ -386,15 +433,42 @@ pub(crate) fn build_runner_command(
                 program: PathBuf::from(runner_path),
                 args,
                 working_dir: install_path.to_path_buf(),
+                envs: vec![("WINEPREFIX".to_string(), path_to_string(&prefix_dir))],
             })
         }
         "proton" => {
-            let runner_path = runner.path.as_deref().unwrap_or("caminho não resolvido");
+            let runner_path = runner.path.as_ref().ok_or_else(|| {
+                format!(
+                    "Runner Proton '{}' foi resolvido sem caminho executável.",
+                    runner.label
+                )
+            })?;
+            let prefix_dir = managed_prefix_dir(app, game_id, "proton")?;
+            let mut args = vec![
+                "run".to_string(),
+                executable_path.to_string_lossy().to_string(),
+            ];
+            let mut envs = vec![(
+                "STEAM_COMPAT_DATA_PATH".to_string(),
+                path_to_string(&prefix_dir),
+            )];
 
-            Err(format!(
-                "Runner Proton '{}' foi resolvido em '{}', mas a execução Proton ainda precisa de prefixo/STEAM_COMPAT_DATA_PATH gerenciado pelo launcher.",
-                runner.label, runner_path
-            ))
+            args.extend_from_slice(launch_args);
+
+            if let Some(steam_dir) = steam_client_install_path() {
+                envs.push((
+                    "STEAM_COMPAT_CLIENT_INSTALL_PATH".to_string(),
+                    path_to_string(&steam_dir),
+                ));
+            }
+
+            Ok(RunnerCommand {
+                runner_kind: runner.kind.clone(),
+                program: PathBuf::from(runner_path),
+                args,
+                working_dir: install_path.to_path_buf(),
+                envs,
+            })
         }
         unsupported_runner => Err(format!(
             "Runner '{}' foi resolvido, mas ainda não possui montagem de comando implementada.",

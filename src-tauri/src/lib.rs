@@ -348,23 +348,28 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
     }
 
     let runner_command = build_runner_command(
+        &app,
+        &game_id,
         &resolved_runner,
         &command_path,
         &install_path,
         &manifest.launch.args,
     )?;
 
-    Command::new(&runner_command.program)
+    let mut command = Command::new(&runner_command.program);
+
+    command
         .args(&runner_command.args)
         .current_dir(&runner_command.working_dir)
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "Não foi possível iniciar {} usando {}: {error}",
-                manifest.name,
-                runner_command.program.display()
-            )
-        })?;
+        .envs(runner_command.envs.iter().map(|(key, value)| (key, value)));
+
+    command.spawn().map_err(|error| {
+        format!(
+            "Não foi possível iniciar {} usando {}: {error}",
+            manifest.name,
+            runner_command.program.display()
+        )
+    })?;
 
     Ok(LaunchResult {
         game_id,
