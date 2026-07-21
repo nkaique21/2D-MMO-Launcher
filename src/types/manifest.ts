@@ -95,11 +95,16 @@ export type GameUpdateResult = {
 export type GameUpdateProgress = {
   gameId: string;
   status: string;
+  stage: string | null;
+  stageLabel: string | null;
   checkedFiles: number;
   updatedFiles: number;
   totalFiles: number;
   currentFile: string | null;
   message: string;
+  targetDir: string | null;
+  logPath: string | null;
+  error: string | null;
 };
 
 export type RunnerInfo = {

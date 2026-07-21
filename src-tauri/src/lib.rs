@@ -187,11 +187,16 @@ struct GameUpdateResult {
 struct GameUpdateProgress {
     game_id: String,
     status: String,
+    stage: Option<String>,
+    stage_label: Option<String>,
     checked_files: usize,
     updated_files: usize,
     total_files: usize,
     current_file: Option<String>,
     message: String,
+    target_dir: Option<String>,
+    log_path: Option<String>,
+    error: Option<String>,
 }
 
 fn manifests_dir() -> Result<PathBuf, String> {
@@ -1058,28 +1063,113 @@ fn build_update_runner_command(
     Ok(runner_command)
 }
 
-fn emit_update_progress(
+fn emit_update_progress_detail(
     app: &tauri::AppHandle,
     game_id: &str,
     status: &str,
+    stage: Option<&str>,
+    stage_label: Option<&str>,
     checked_files: usize,
     updated_files: usize,
     total_files: usize,
     current_file: Option<String>,
     message: String,
+    target_dir: Option<&Path>,
+    log_path: Option<&Path>,
+    error: Option<String>,
 ) {
     let _ = app.emit(
         "game-update-progress",
         GameUpdateProgress {
             game_id: game_id.to_string(),
             status: status.to_string(),
+            stage: stage.map(str::to_string),
+            stage_label: stage_label.map(str::to_string),
             checked_files,
             updated_files,
             total_files,
             current_file,
             message,
+            target_dir: target_dir.map(|path| path.to_string_lossy().to_string()),
+            log_path: log_path.map(|path| path.to_string_lossy().to_string()),
+            error,
         },
     );
+}
+
+fn append_update_stage_log(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    stage: &str,
+    stage_label: &str,
+) -> Result<PathBuf, String> {
+    append_runner_log(
+        app,
+        game_id,
+        &[
+            format!("remote_update_stage={stage}"),
+            format!("remote_update_stage_label={stage_label}"),
+        ],
+    )
+}
+
+fn emit_and_log_update_stage(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    status: &str,
+    stage: &str,
+    stage_label: &str,
+    message: &str,
+    log_path: Option<&Path>,
+) -> Result<(), String> {
+    append_update_stage_log(app, game_id, stage, stage_label)?;
+    emit_update_progress_detail(
+        app,
+        game_id,
+        status,
+        Some(stage),
+        Some(stage_label),
+        0,
+        0,
+        0,
+        None,
+        message.to_string(),
+        None,
+        log_path,
+        None,
+    );
+
+    Ok(())
+}
+
+fn log_and_emit_update_error(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    stage: &str,
+    stage_label: &str,
+    message: String,
+    log_path: Option<&Path>,
+    target_dir: Option<&Path>,
+) -> String {
+    let logged_message = log_error_message(app, game_id, message);
+
+    emit_update_progress_detail(
+        app,
+        game_id,
+        "error",
+        Some(stage),
+        Some(stage_label),
+        0,
+        0,
+        0,
+        None,
+        format!("Falha em {stage_label}."),
+        target_dir,
+        log_path,
+        Some(logged_message.clone()),
+    );
+
+    logged_message
 }
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
@@ -1230,24 +1320,80 @@ fn run_remote_manifest_update(
     install_path: PathBuf,
     attempt_log_path: PathBuf,
 ) -> Result<GameUpdateResult, String> {
+    emit_and_log_update_stage(
+        &app,
+        &game_id,
+        "preparing",
+        "resolveRemoteManifest",
+        "Resolver manifesto remoto",
+        "Resolvendo configuração do manifesto remoto...",
+        Some(&attempt_log_path),
+    )?;
+
     let manifest_url = manifest.update.manifest_url.as_deref().ok_or_else(|| {
-        log_error_message(
+        log_and_emit_update_error(
             &app,
             &game_id,
+            "resolveRemoteManifest",
+            "Resolver manifesto remoto",
             format!("{} não define update.manifestUrl.", manifest.name),
+            Some(&attempt_log_path),
+            None,
         )
     })?;
-    let target_dir = remote_update_target_dir(&app, &game_id, &manifest, &install_path)
-        .map_err(|error| log_error_message(&app, &game_id, error))?;
+
+    emit_and_log_update_stage(
+        &app,
+        &game_id,
+        "preparing",
+        "resolveTargetDir",
+        "Resolver pasta alvo",
+        "Resolvendo pasta onde os arquivos serão verificados...",
+        Some(&attempt_log_path),
+    )?;
+
+    let target_dir =
+        remote_update_target_dir(&app, &game_id, &manifest, &install_path).map_err(|error| {
+            log_and_emit_update_error(
+                &app,
+                &game_id,
+                "resolveTargetDir",
+                "Resolver pasta alvo",
+                error,
+                Some(&attempt_log_path),
+                None,
+            )
+        })?;
+
+    emit_update_progress_detail(
+        &app,
+        &game_id,
+        "preparing",
+        Some("prepareTargetDir"),
+        Some("Preparar pasta alvo"),
+        0,
+        0,
+        0,
+        None,
+        "Preparando pasta alvo do update...".to_string(),
+        Some(&target_dir),
+        Some(&attempt_log_path),
+        None,
+    );
+    append_update_stage_log(&app, &game_id, "prepareTargetDir", "Preparar pasta alvo")?;
 
     fs::create_dir_all(&target_dir).map_err(|error| {
-        log_error_message(
+        log_and_emit_update_error(
             &app,
             &game_id,
+            "prepareTargetDir",
+            "Preparar pasta alvo",
             format!(
                 "Não foi possível criar a pasta de update {}: {error}",
                 target_dir.display()
             ),
+            Some(&attempt_log_path),
+            Some(&target_dir),
         )
     })?;
 
@@ -1268,22 +1414,92 @@ fn run_remote_manifest_update(
         ],
     )?;
 
-    emit_update_progress(
+    append_update_stage_log(
+        &app,
+        &game_id,
+        "downloadRemoteManifest",
+        "Baixar manifesto remoto",
+    )?;
+    emit_update_progress_detail(
         &app,
         &game_id,
         "manifest",
+        Some("downloadRemoteManifest"),
+        Some("Baixar manifesto remoto"),
+        0,
+        0,
+        0,
+        Some(manifest_url.to_string()),
+        "Baixando manifesto remoto...".to_string(),
+        Some(&target_dir),
+        Some(&attempt_log_path),
+        None,
+    );
+
+    let manifest_bytes = download_bytes(manifest_url).map_err(|error| {
+        log_and_emit_update_error(
+            &app,
+            &game_id,
+            "downloadRemoteManifest",
+            "Baixar manifesto remoto",
+            error,
+            Some(&attempt_log_path),
+            Some(&target_dir),
+        )
+    })?;
+
+    append_update_stage_log(
+        &app,
+        &game_id,
+        "decodeRemoteManifest",
+        "Decodificar manifesto remoto",
+    )?;
+    emit_update_progress_detail(
+        &app,
+        &game_id,
+        "manifest",
+        Some("decodeRemoteManifest"),
+        Some("Decodificar manifesto remoto"),
         0,
         0,
         0,
         None,
-        "Baixando manifesto remoto...".to_string(),
+        "Decodificando manifesto remoto...".to_string(),
+        Some(&target_dir),
+        Some(&attempt_log_path),
+        None,
     );
 
-    let manifest_bytes =
-        download_bytes(manifest_url).map_err(|error| log_error_message(&app, &game_id, error))?;
     let remote_manifest =
         decode_remote_update_manifest(&manifest_bytes, manifest.update.manifest_format.as_deref())
-            .map_err(|error| log_error_message(&app, &game_id, error))?;
+            .map_err(|error| {
+                log_and_emit_update_error(
+                    &app,
+                    &game_id,
+                    "decodeRemoteManifest",
+                    "Decodificar manifesto remoto",
+                    error,
+                    Some(&attempt_log_path),
+                    Some(&target_dir),
+                )
+            })?;
+
+    append_update_stage_log(&app, &game_id, "buildFileList", "Montar lista de arquivos")?;
+    emit_update_progress_detail(
+        &app,
+        &game_id,
+        "manifest",
+        Some("buildFileList"),
+        Some("Montar lista de arquivos"),
+        0,
+        0,
+        0,
+        None,
+        "Montando lista de arquivos do update...".to_string(),
+        Some(&target_dir),
+        Some(&attempt_log_path),
+        None,
+    );
 
     let mut remote_file_map = remote_manifest.files;
     let remote_binary_file = remote_manifest
@@ -1321,15 +1537,21 @@ fn run_remote_manifest_update(
         ],
     )?;
 
-    emit_update_progress(
+    append_update_stage_log(&app, &game_id, "checkingFiles", "Verificar arquivos locais")?;
+    emit_update_progress_detail(
         &app,
         &game_id,
         "checking",
+        Some("checkingFiles"),
+        Some("Verificar arquivos locais"),
         0,
         0,
         total_files,
         None,
         "Verificando arquivos locais...".to_string(),
+        Some(&target_dir),
+        Some(&attempt_log_path),
+        None,
     );
 
     let mut checked_files = 0_usize;
@@ -1346,15 +1568,20 @@ fn run_remote_manifest_update(
             || checked_files % REMOTE_UPDATE_PROGRESS_INTERVAL == 0
             || checked_files == total_files
         {
-            emit_update_progress(
+            emit_update_progress_detail(
                 &app,
                 &game_id,
                 "checking",
+                Some("checkingFiles"),
+                Some("Verificar arquivos locais"),
                 checked_files,
                 updated_files,
                 total_files,
                 Some(remote_path.clone()),
                 format!("Verificando {checked_files} de {total_files} arquivos..."),
+                Some(&target_dir),
+                Some(&attempt_log_path),
+                None,
             );
         }
 
@@ -1373,26 +1600,48 @@ fn run_remote_manifest_update(
             )?;
         }
 
-        let relative_path = safe_remote_relative_path(&remote_path)
-            .map_err(|error| log_error_message(&app, &game_id, error))?;
+        let relative_path = safe_remote_relative_path(&remote_path).map_err(|error| {
+            log_and_emit_update_error(
+                &app,
+                &game_id,
+                "checkingFiles",
+                "Verificar arquivos locais",
+                error,
+                Some(&attempt_log_path),
+                Some(&target_dir),
+            )
+        })?;
         let destination = target_dir.join(relative_path);
 
-        if local_file_matches(&destination, &expected)
-            .map_err(|error| log_error_message(&app, &game_id, error))?
-        {
+        if local_file_matches(&destination, &expected).map_err(|error| {
+            log_and_emit_update_error(
+                &app,
+                &game_id,
+                "checkingFiles",
+                "Verificar arquivos locais",
+                error,
+                Some(&attempt_log_path),
+                Some(&target_dir),
+            )
+        })? {
             skipped_files += 1;
             continue;
         }
 
-        emit_update_progress(
+        emit_update_progress_detail(
             &app,
             &game_id,
             "downloading",
+            Some("downloadingFiles"),
+            Some("Baixar arquivos divergentes"),
             checked_files,
             updated_files,
             total_files,
             Some(remote_path.clone()),
             format!("Baixando {remote_path}"),
+            Some(&target_dir),
+            Some(&attempt_log_path),
+            None,
         );
 
         append_runner_log(
@@ -1410,18 +1659,31 @@ fn run_remote_manifest_update(
         let file_url = remote_file_url(&remote_manifest.url, &remote_path);
         let temporary_destination = destination.with_extension("download");
 
-        download_file(&file_url, &temporary_destination)
-            .map_err(|error| log_error_message(&app, &game_id, error))?;
+        download_file(&file_url, &temporary_destination).map_err(|error| {
+            log_and_emit_update_error(
+                &app,
+                &game_id,
+                "downloadingFiles",
+                "Baixar arquivos divergentes",
+                error,
+                Some(&attempt_log_path),
+                Some(&target_dir),
+            )
+        })?;
 
         let downloaded_size = fs::metadata(&temporary_destination)
             .map_err(|error| {
-                log_error_message(
+                log_and_emit_update_error(
                     &app,
                     &game_id,
+                    "validateDownloadedFile",
+                    "Validar arquivo baixado",
                     format!(
                         "Não foi possível validar arquivo baixado {}: {error}",
                         temporary_destination.display()
                     ),
+                    Some(&attempt_log_path),
+                    Some(&target_dir),
                 )
             })?
             .len();
@@ -1430,39 +1692,59 @@ fn run_remote_manifest_update(
             size: expected.size,
         };
 
-        if !local_file_matches(&temporary_destination, &downloaded_entry)
-            .map_err(|error| log_error_message(&app, &game_id, error))?
-        {
-            let _ = fs::remove_file(&temporary_destination);
-
-            return Err(log_error_message(
+        if !local_file_matches(&temporary_destination, &downloaded_entry).map_err(|error| {
+            log_and_emit_update_error(
                 &app,
                 &game_id,
+                "validateDownloadedFile",
+                "Validar arquivo baixado",
+                error,
+                Some(&attempt_log_path),
+                Some(&target_dir),
+            )
+        })? {
+            let _ = fs::remove_file(&temporary_destination);
+
+            return Err(log_and_emit_update_error(
+                &app,
+                &game_id,
+                "validateDownloadedFile",
+                "Validar arquivo baixado",
                 format!("Arquivo baixado falhou na validação: {remote_path}"),
+                Some(&attempt_log_path),
+                Some(&target_dir),
             ));
         }
 
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).map_err(|error| {
-                log_error_message(
+                log_and_emit_update_error(
                     &app,
                     &game_id,
+                    "applyDownloadedFile",
+                    "Aplicar arquivo baixado",
                     format!(
                         "Não foi possível criar diretório {}: {error}",
                         parent.display()
                     ),
+                    Some(&attempt_log_path),
+                    Some(&target_dir),
                 )
             })?;
         }
 
         fs::rename(&temporary_destination, &destination).map_err(|error| {
-            log_error_message(
+            log_and_emit_update_error(
                 &app,
                 &game_id,
+                "applyDownloadedFile",
+                "Aplicar arquivo baixado",
                 format!(
                     "Não foi possível aplicar update em {}: {error}",
                     destination.display()
                 ),
+                Some(&attempt_log_path),
+                Some(&target_dir),
             )
         })?;
 
@@ -1482,15 +1764,20 @@ fn run_remote_manifest_update(
         ],
     )?;
 
-    emit_update_progress(
+    emit_update_progress_detail(
         &app,
         &game_id,
         "done",
+        Some("done"),
+        Some("Concluído"),
         checked_files,
         updated_files,
         total_files,
         None,
         "Update concluído.".to_string(),
+        Some(&target_dir),
+        Some(&attempt_log_path),
+        None,
     );
 
     Ok(GameUpdateResult {
@@ -2420,40 +2707,143 @@ async fn run_game_remote_update(
         ],
     )?;
 
-    let connection =
-        open_database(&app).map_err(|error| log_error_message(&app, &game_id, error))?;
-    let install = get_install(&connection, &game_id)
-        .map_err(|error| log_error_message(&app, &game_id, error))?;
-    let manifest =
-        get_manifest(&game_id).map_err(|error| log_error_message(&app, &game_id, error))?;
+    emit_and_log_update_stage(
+        &app,
+        &game_id,
+        "preparing",
+        "start",
+        "Preparar update",
+        "Iniciando diagnóstico do update remoto...",
+        Some(&attempt_log_path),
+    )?;
 
-    if manifest.update.strategy != "remoteManifest" {
-        return Err(log_error_message(
+    emit_and_log_update_stage(
+        &app,
+        &game_id,
+        "preparing",
+        "openDatabase",
+        "Abrir banco local",
+        "Abrindo banco local do launcher...",
+        Some(&attempt_log_path),
+    )?;
+    let connection = open_database(&app).map_err(|error| {
+        log_and_emit_update_error(
             &app,
             &game_id,
+            "openDatabase",
+            "Abrir banco local",
+            error,
+            Some(&attempt_log_path),
+            None,
+        )
+    })?;
+
+    emit_and_log_update_stage(
+        &app,
+        &game_id,
+        "preparing",
+        "loadInstall",
+        "Carregar instalação",
+        "Carregando instalação registrada no SQLite...",
+        Some(&attempt_log_path),
+    )?;
+    let install = get_install(&connection, &game_id).map_err(|error| {
+        log_and_emit_update_error(
+            &app,
+            &game_id,
+            "loadInstall",
+            "Carregar instalação",
+            error,
+            Some(&attempt_log_path),
+            None,
+        )
+    })?;
+
+    emit_and_log_update_stage(
+        &app,
+        &game_id,
+        "preparing",
+        "loadLocalManifest",
+        "Carregar manifesto local",
+        "Lendo manifesto local do jogo...",
+        Some(&attempt_log_path),
+    )?;
+    let manifest = get_manifest(&game_id).map_err(|error| {
+        log_and_emit_update_error(
+            &app,
+            &game_id,
+            "loadLocalManifest",
+            "Carregar manifesto local",
+            error,
+            Some(&attempt_log_path),
+            None,
+        )
+    })?;
+
+    if manifest.update.strategy != "remoteManifest" {
+        return Err(log_and_emit_update_error(
+            &app,
+            &game_id,
+            "loadLocalManifest",
+            "Carregar manifesto local",
             format!(
                 "{} não possui update.strategy remoteManifest configurado.",
                 manifest.name
             ),
+            Some(&attempt_log_path),
+            None,
         ));
     }
 
+    emit_and_log_update_stage(
+        &app,
+        &game_id,
+        "preparing",
+        "reconcileInstall",
+        "Reconciliar instalação",
+        "Conferindo se a pasta registrada ainda bate com o manifesto...",
+        Some(&attempt_log_path),
+    )?;
     let install =
         reconcile_registered_install_path(&app, &connection, &game_id, &manifest, install)
-            .map_err(|error| log_error_message(&app, &game_id, error))?;
+            .map_err(|error| {
+                log_and_emit_update_error(
+                    &app,
+                    &game_id,
+                    "reconcileInstall",
+                    "Reconciliar instalação",
+                    error,
+                    Some(&attempt_log_path),
+                    None,
+                )
+            })?;
     let install_path = PathBuf::from(&install.install_path);
 
     if !install_path.exists() {
-        return Err(log_error_message(
+        return Err(log_and_emit_update_error(
             &app,
             &game_id,
+            "validateInstallPath",
+            "Validar pasta registrada",
             format!(
                 "A pasta registrada para {} não existe mais: {}",
                 manifest.name,
                 install_path.display()
             ),
+            Some(&attempt_log_path),
+            None,
         ));
     }
+
+    emit_and_log_update_stage(
+        &app,
+        &game_id,
+        "preparing",
+        "spawnBlockingTask",
+        "Enviar tarefa para background",
+        "Movendo verificação/download para uma tarefa em background...",
+        Some(&attempt_log_path),
+    )?;
 
     tauri::async_runtime::spawn_blocking(move || {
         run_remote_manifest_update(app, game_id, manifest, install_path, attempt_log_path)

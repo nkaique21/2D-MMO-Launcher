@@ -38,6 +38,11 @@ type SecondaryAction = {
   type: 'installedAction' | 'installMethod' | 'manifestDetails' | 'runnerSettings';
 };
 
+type UpdateStageDefinition = {
+  id: string;
+  label: string;
+};
+
 const fallbackVisualMetadata: GameVisualMetadata = {
   shortName: '2D',
   accent: 'from-purple-500 via-indigo-500 to-sky-500',
@@ -144,12 +149,75 @@ function formatInteger(value: number) {
 }
 
 function formatUpdateStatus(status: string) {
+  if (status === 'preparing') return 'Preparando';
   if (status === 'manifest') return 'Manifesto';
   if (status === 'checking') return 'Verificando';
   if (status === 'downloading') return 'Baixando';
+  if (status === 'error') return 'Erro';
   if (status === 'done') return 'Concluído';
 
   return status || 'Atualizando';
+}
+
+const remoteUpdateStages: UpdateStageDefinition[] = [
+  { id: 'start', label: 'Preparar update' },
+  { id: 'openDatabase', label: 'Banco local' },
+  { id: 'loadInstall', label: 'Instalação' },
+  { id: 'loadLocalManifest', label: 'Manifesto local' },
+  { id: 'reconcileInstall', label: 'Reconciliar' },
+  { id: 'spawnBlockingTask', label: 'Background' },
+  { id: 'resolveRemoteManifest', label: 'Config remota' },
+  { id: 'resolveTargetDir', label: 'Pasta alvo' },
+  { id: 'prepareTargetDir', label: 'Preparar pasta' },
+  { id: 'downloadRemoteManifest', label: 'Baixar manifesto' },
+  { id: 'decodeRemoteManifest', label: 'Decodificar' },
+  { id: 'buildFileList', label: 'Lista de arquivos' },
+  { id: 'checkingFiles', label: 'Verificar arquivos' },
+  { id: 'downloadingFiles', label: 'Baixar divergentes' },
+  { id: 'validateDownloadedFile', label: 'Validar download' },
+  { id: 'applyDownloadedFile', label: 'Aplicar arquivos' },
+  { id: 'done', label: 'Concluído' },
+];
+
+function createPreparingUpdateProgress(gameId: string): GameUpdateProgress {
+  return {
+    gameId,
+    status: 'preparing',
+    stage: 'start',
+    stageLabel: 'Preparar update',
+    checkedFiles: 0,
+    updatedFiles: 0,
+    totalFiles: 0,
+    currentFile: null,
+    message: 'Preparando atualização dos arquivos...',
+    targetDir: null,
+    logPath: null,
+    error: null,
+  };
+}
+
+function getUpdateStageIndex(progress: GameUpdateProgress | null) {
+  if (!progress) return -1;
+
+  const stageIndex = remoteUpdateStages.findIndex((stage) => stage.id === progress.stage);
+
+  if (stageIndex >= 0) return stageIndex;
+  if (progress.status === 'manifest') return remoteUpdateStages.findIndex((stage) => stage.id === 'downloadRemoteManifest');
+  if (progress.status === 'checking') return remoteUpdateStages.findIndex((stage) => stage.id === 'checkingFiles');
+  if (progress.status === 'downloading') return remoteUpdateStages.findIndex((stage) => stage.id === 'downloadingFiles');
+  if (progress.status === 'done') return remoteUpdateStages.length - 1;
+
+  return 0;
+}
+
+function formatElapsedSeconds(timestamp: number | null, now: number) {
+  if (!timestamp) return 'sem evento ainda';
+
+  const elapsedSeconds = Math.max(0, Math.floor((now - timestamp) / 1000));
+
+  if (elapsedSeconds <= 1) return 'agora mesmo';
+
+  return `há ${elapsedSeconds}s`;
 }
 
 function getUpdatePercent(progress: GameUpdateProgress | null) {
@@ -226,6 +294,8 @@ function App() {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState<GameUpdateProgress | null>(null);
+  const [updateProgressReceivedAt, setUpdateProgressReceivedAt] = useState<number | null>(null);
+  const [nowTimestamp, setNowTimestamp] = useState(() => Date.now());
   const [isLaunching, setIsLaunching] = useState(false);
   const [reloadSignal, setReloadSignal] = useState(0);
 
@@ -295,12 +365,19 @@ function App() {
       if (!isMounted) return;
 
       setUpdateProgress(event.payload);
+      setUpdateProgressReceivedAt(Date.now());
     });
 
     return () => {
       isMounted = false;
       void unlistenPromise.then((unlisten) => unlisten());
     };
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNowTimestamp(Date.now()), 1000);
+
+    return () => window.clearInterval(interval);
   }, []);
 
   const installedGameIds = useMemo(
@@ -394,6 +471,8 @@ function App() {
   const secondaryActions = getSecondaryActions(selectedGame);
   const activeUpdateProgress = updateProgress?.gameId === selectedGame.id ? updateProgress : null;
   const updatePercent = getUpdatePercent(activeUpdateProgress);
+  const updateStageIndex = getUpdateStageIndex(activeUpdateProgress);
+  const lastUpdateEventLabel = formatElapsedSeconds(updateProgressReceivedAt, nowTimestamp);
   const isRemoteUpdateRunning = pendingActionId === 'run-remote-update';
 
   async function handlePrimaryAction() {
@@ -522,7 +601,8 @@ function App() {
 
     if (action.type === 'installedAction' && action.id === 'run-remote-update') {
       setPendingActionId(action.id);
-      setUpdateProgress(null);
+      setUpdateProgress(createPreparingUpdateProgress(selectedGame.id));
+      setUpdateProgressReceivedAt(Date.now());
       setActionMessage('Preparando atualização dos arquivos...');
 
       try {
@@ -751,7 +831,8 @@ function App() {
                             {activeUpdateProgress.message}
                           </h3>
                           <p className="mt-2 truncate text-sm font-semibold text-sky-100/75" title={activeUpdateProgress.currentFile ?? undefined}>
-                            {activeUpdateProgress.currentFile ?? 'Preparando lista de arquivos...'}
+                            {activeUpdateProgress.stageLabel ?? 'Preparando diagnóstico'}
+                            {activeUpdateProgress.currentFile ? ` • ${activeUpdateProgress.currentFile}` : ''}
                           </p>
                         </div>
                         <div className="shrink-0 text-right">
@@ -762,6 +843,35 @@ function App() {
                             {formatUpdateStatus(activeUpdateProgress.status)}
                           </span>
                         </div>
+                      </div>
+
+                      <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        {remoteUpdateStages.map((stage, index) => {
+                          const isCurrent = index === updateStageIndex;
+                          const isComplete = activeUpdateProgress.status === 'done' || index < updateStageIndex;
+                          const isError = activeUpdateProgress.status === 'error' && isCurrent;
+
+                          return (
+                            <div
+                              className={`flex items-center gap-2 rounded-2xl px-3 py-2 text-[0.68rem] font-black uppercase tracking-[0.12em] ring-1 ${
+                                isError
+                                  ? 'bg-red-400/15 text-red-100 ring-red-300/25'
+                                  : isCurrent
+                                    ? 'bg-sky-300/15 text-white ring-sky-200/30 shadow-[0_0_22px_rgba(125,211,252,0.16)]'
+                                    : isComplete
+                                      ? 'bg-emerald-400/10 text-emerald-100/85 ring-emerald-300/15'
+                                      : 'bg-white/[0.045] text-sky-100/45 ring-white/[0.06]'
+                              }`}
+                              key={stage.id}
+                              title={stage.id}
+                            >
+                              <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-black/25 text-[0.65rem] ring-1 ring-white/10">
+                                {isError ? '!' : isComplete ? '✓' : isCurrent ? '●' : '○'}
+                              </span>
+                              <span className="truncate">{stage.label}</span>
+                            </div>
+                          );
+                        })}
                       </div>
 
                       <div className="mt-5 h-4 overflow-hidden rounded-full bg-black/35 p-1 ring-1 ring-white/[0.08]">
@@ -783,6 +893,22 @@ function App() {
                         <div className="rounded-2xl bg-white/[0.06] p-3 ring-1 ring-white/[0.06]">
                           <p className="font-black text-white">{formatUpdateStatus(activeUpdateProgress.status)}</p>
                           <p className="mt-1 text-sky-100/60">fase atual</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 grid gap-2 rounded-2xl bg-black/25 p-4 text-xs leading-5 text-sky-50/80 ring-1 ring-white/[0.06] sm:grid-cols-2">
+                        <div>
+                          <p className="font-black uppercase tracking-[0.16em] text-sky-200">Diagnóstico</p>
+                          <p className="mt-2">Stage: <strong>{activeUpdateProgress.stage ?? 'sem stage'}</strong></p>
+                          <p>Último evento: <strong>{lastUpdateEventLabel}</strong></p>
+                          <p>Status: <strong>{activeUpdateProgress.status}</strong></p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate">Alvo: <strong>{activeUpdateProgress.targetDir ?? 'aguardando backend'}</strong></p>
+                          <p className="truncate">Log: <strong>{activeUpdateProgress.logPath ?? 'aguardando backend'}</strong></p>
+                          {activeUpdateProgress.error && (
+                            <p className="mt-1 line-clamp-2 text-red-100">Erro: {activeUpdateProgress.error}</p>
+                          )}
                         </div>
                       </div>
                     </section>
@@ -846,7 +972,12 @@ function App() {
               </section>
 
               {activeUpdateProgress && (
-                <section className="rounded-[1.75rem] border border-sky-300/20 bg-sky-500/[0.08] p-5 text-sm text-sky-100">
+                <section className={`rounded-[1.75rem] border p-5 text-sm ${
+                  activeUpdateProgress.status === 'error'
+                    ? 'border-red-300/20 bg-red-500/[0.08] text-red-100'
+                    : 'border-sky-300/20 bg-sky-500/[0.08] text-sky-100'
+                }`}
+                >
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-xs font-black uppercase tracking-[0.2em] text-sky-200">
@@ -868,6 +999,14 @@ function App() {
                     {formatInteger(activeUpdateProgress.checkedFiles)}/{formatInteger(activeUpdateProgress.totalFiles)} verificados • {formatInteger(activeUpdateProgress.updatedFiles)} baixados
                     {activeUpdateProgress.currentFile ? ` • ${activeUpdateProgress.currentFile}` : ''}
                   </p>
+                  <div className="mt-4 space-y-1 rounded-2xl bg-black/20 p-3 text-xs leading-5 ring-1 ring-white/[0.06]">
+                    <p><strong>Etapa:</strong> {activeUpdateProgress.stageLabel ?? 'Aguardando etapa'}</p>
+                    <p><strong>Evento:</strong> {lastUpdateEventLabel}</p>
+                    <p className="break-all"><strong>Log:</strong> {activeUpdateProgress.logPath ?? 'aguardando backend'}</p>
+                    {activeUpdateProgress.targetDir && (
+                      <p className="break-all"><strong>Alvo:</strong> {activeUpdateProgress.targetDir}</p>
+                    )}
+                  </div>
                 </section>
               )}
 
