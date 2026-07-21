@@ -346,6 +346,8 @@ Critério de arquitetura: sempre que uma funcionalidade parecer específica dema
 
 ## Fluxo obrigatório de etapas Git
 
+- Ao concluir cada etapa funcional aprovada pelo usuário, atualizar este próprio `AGENTS.md` com o estado recente, decisões importantes, próximos passos e qualquer nova regra operacional definida durante a etapa.
+- A atualização do `AGENTS.md` deve acontecer antes do commit da etapa, para que o contexto versionado acompanhe a evolução real do projeto.
 - Ao concluir cada etapa funcional aprovada pelo usuário, criar um commit Git específico para aquela etapa.
 - Depois do commit local, subir as alterações para o remoto configurado com `git push` antes de iniciar a próxima etapa.
 - Antes de commitar, revisar `git status` e, quando útil, o diff para evitar incluir mudanças acidentais.
