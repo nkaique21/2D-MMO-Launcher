@@ -1,0 +1,25 @@
+{
+  "id": "grand-line-adventures",
+  "name": "Grand Line Adventures",
+  "description": "MMORPG 2D com foco em aventura, progressão e exploração em mundo persistente.",
+  "assets": {
+    "banner": "/assets/games/grand-line-adventures/banner.png",
+    "icon": "/assets/games/grand-line-adventures/icon.png"
+  },
+  "installation": {
+    "methods": [
+      {
+        "type": "existing",
+        "label": "Localizar instalação existente"
+      }
+    ]
+  },
+  "launch": {
+    "runner": "native",
+    "executable": null,
+    "args": []
+  },
+  "update": {
+    "strategy": "manual"
+  }
+}

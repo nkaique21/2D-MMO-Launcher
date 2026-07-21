@@ -1,29 +1,40 @@
-const libraryGames = [
-  {
-    name: 'RavenQuest',
-    status: 'Manifesto pendente',
-    accent: 'from-violet-500 to-fuchsia-500',
-  },
-  {
-    name: 'PokeXGames',
-    status: 'Instalação manual',
-    accent: 'from-purple-500 to-indigo-500',
-  },
-  {
-    name: 'Grand Line Adventures',
-    status: 'Em breve',
-    accent: 'from-sky-500 to-violet-500',
-  },
-  {
-    name: 'Zezenia',
-    status: 'Pronto para catálogo',
-    accent: 'from-emerald-400 to-purple-500',
-  },
+import { useEffect, useMemo, useState } from 'react';
+import { listGames } from './lib/tauri';
+import type { GameManifest } from './types/manifest';
+
+const cardAccents = [
+  'from-violet-500 to-fuchsia-500',
+  'from-purple-500 to-indigo-500',
+  'from-sky-500 to-violet-500',
+  'from-emerald-400 to-purple-500',
+  'from-rose-500 to-violet-500',
+  'from-amber-400 to-purple-600',
 ];
 
 const navItems = ['Library', 'Downloads', 'Settings'];
 
 function App() {
+  const [games, setGames] = useState<GameManifest[]>([]);
+  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  useEffect(() => {
+    listGames()
+      .then((loadedGames) => {
+        setGames(loadedGames);
+        setSelectedGameId(loadedGames[0]?.id ?? null);
+        setCatalogError(null);
+      })
+      .catch((error) => {
+        setCatalogError(error instanceof Error ? error.message : String(error));
+      });
+  }, []);
+
+  const selectedGame = useMemo(
+    () => games.find((game) => game.id === selectedGameId) ?? games[0],
+    [games, selectedGameId],
+  );
+
   return (
     <main className="min-h-screen bg-launcher-bg text-launcher-text">
       <div className="flex min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(139,92,246,0.24),transparent_32rem),radial-gradient(circle_at_bottom_right,rgba(91,33,182,0.24),transparent_34rem)]">
@@ -79,26 +90,38 @@ function App() {
                 className="rounded-2xl border border-purple-400/40 bg-purple-500/10 px-5 py-3 text-sm font-bold text-purple-100 transition hover:bg-purple-500/20"
                 type="button"
               >
-                Adicionar manifesto
+                {games.length} manifestos
               </button>
             </div>
           </header>
 
           <div className="grid flex-1 grid-cols-[1fr_380px] gap-6 overflow-auto p-8">
             <section>
+              {catalogError ? (
+                <div className="rounded-3xl border border-red-400/30 bg-red-950/30 p-6 text-red-100">
+                  <p className="font-bold">Erro ao carregar catálogo</p>
+                  <p className="mt-2 text-sm opacity-80">{catalogError}</p>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-2 gap-5">
-                {libraryGames.map((game) => (
+                {games.map((game, index) => (
                   <article
-                    className="group overflow-hidden rounded-3xl border border-launcher-border bg-launcher-panel shadow-2xl shadow-black/30 transition hover:-translate-y-1 hover:border-purple-400/60"
-                    key={game.name}
+                    className={`group overflow-hidden rounded-3xl border bg-launcher-panel shadow-2xl shadow-black/30 transition hover:-translate-y-1 hover:border-purple-400/60 ${
+                      selectedGame?.id === game.id ? 'border-purple-400/70' : 'border-launcher-border'
+                    }`}
+                    key={game.id}
+                    onClick={() => setSelectedGameId(game.id)}
                   >
-                    <div className={`h-36 bg-gradient-to-br ${game.accent} opacity-90`} />
+                    <div className={`h-36 bg-gradient-to-br ${cardAccents[index % cardAccents.length]} opacity-90`} />
                     <div className="p-5">
                       <p className="text-xs font-bold uppercase tracking-[0.18em] text-purple-300">
                         MMORPG 2D
                       </p>
                       <h3 className="mt-2 text-2xl font-black">{game.name}</h3>
-                      <p className="mt-2 text-sm text-launcher-muted">{game.status}</p>
+                      <p className="mt-2 line-clamp-2 text-sm text-launcher-muted">
+                        {game.description}
+                      </p>
                     </div>
                   </article>
                 ))}
@@ -110,8 +133,10 @@ function App() {
                 <p className="text-xs font-bold uppercase tracking-[0.22em] text-purple-100/80">
                   Selecionado
                 </p>
-                <h3 className="mt-20 text-3xl font-black">Zezenia</h3>
-                <p className="mt-2 text-sm text-purple-100/80">Manifesto e instalação manual.</p>
+                <h3 className="mt-20 text-3xl font-black">{selectedGame?.name ?? 'Catálogo'}</h3>
+                <p className="mt-2 text-sm text-purple-100/80">
+                  {selectedGame?.description ?? 'Nenhum manifesto carregado.'}
+                </p>
               </div>
 
               <div className="mt-6 space-y-3">
@@ -129,11 +154,11 @@ function App() {
               <div className="mt-6 grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-2xl bg-white/5 p-4">
                   <p className="text-launcher-muted">Runner</p>
-                  <p className="mt-1 font-bold">Native</p>
+                  <p className="mt-1 font-bold capitalize">{selectedGame?.launch.runner ?? '-'}</p>
                 </div>
                 <div className="rounded-2xl bg-white/5 p-4">
-                  <p className="text-launcher-muted">Status</p>
-                  <p className="mt-1 font-bold">Não instalado</p>
+                  <p className="text-launcher-muted">Update</p>
+                  <p className="mt-1 font-bold capitalize">{selectedGame?.update.strategy ?? '-'}</p>
                 </div>
               </div>
             </aside>

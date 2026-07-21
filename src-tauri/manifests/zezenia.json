@@ -1,0 +1,25 @@
+{
+  "id": "zezenia",
+  "name": "Zezenia",
+  "description": "MMORPG 2D clássico com exploração, vocações e progressão persistente.",
+  "assets": {
+    "banner": "/assets/games/zezenia/banner.png",
+    "icon": "/assets/games/zezenia/icon.png"
+  },
+  "installation": {
+    "methods": [
+      {
+        "type": "existing",
+        "label": "Localizar instalação existente"
+      }
+    ]
+  },
+  "launch": {
+    "runner": "native",
+    "executable": null,
+    "args": []
+  },
+  "update": {
+    "strategy": "manual"
+  }
+}

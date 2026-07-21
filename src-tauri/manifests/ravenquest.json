@@ -1,0 +1,25 @@
+{
+  "id": "ravenquest",
+  "name": "RavenQuest",
+  "description": "MMORPG 2D moderno com economia, progressão aberta e mundo persistente.",
+  "assets": {
+    "banner": "/assets/games/ravenquest/banner.png",
+    "icon": "/assets/games/ravenquest/icon.png"
+  },
+  "installation": {
+    "methods": [
+      {
+        "type": "existing",
+        "label": "Localizar instalação existente"
+      }
+    ]
+  },
+  "launch": {
+    "runner": "native",
+    "executable": null,
+    "args": []
+  },
+  "update": {
+    "strategy": "manual"
+  }
+}
