@@ -47,3 +47,14 @@ export type LaunchResult = {
   command: string;
   workingDir: string;
 };
+
+export type RunnerInfo = {
+  id: string;
+  kind: string;
+  label: string;
+  status: string;
+  source: string;
+  path: string | null;
+  installable: boolean;
+  installHint: string | null;
+};

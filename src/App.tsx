@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   listGames,
   listInstalls,
+  listRunners,
   launchGame,
   locateExistingInstall,
   openInstallFolder,
   removeInstall,
 } from './lib/tauri';
-import type { GameInstall, GameManifest } from './types/manifest';
+import type { GameInstall, GameManifest, RunnerInfo } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
 
@@ -111,6 +112,13 @@ function formatRunner(runner: string) {
   return runner || 'Não definido';
 }
 
+function formatRunnerStatus(status: string) {
+  if (status === 'available') return 'Disponível';
+  if (status === 'installable') return 'Instalável';
+
+  return status || 'Indefinido';
+}
+
 function toViewModel(game: GameManifest, installedGameIds: Set<string>): GameViewModel {
   const status: InstallationStatus = installedGameIds.has(game.id) ? 'installed' : 'available';
   const runner = game.launch.runner.toLowerCase();
@@ -152,6 +160,7 @@ function getSecondaryActions(game: GameViewModel): SecondaryAction[] {
 function App() {
   const [manifests, setManifests] = useState<GameManifest[]>([]);
   const [installs, setInstalls] = useState<GameInstall[]>([]);
+  const [runners, setRunners] = useState<RunnerInfo[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -167,12 +176,13 @@ function App() {
     setIsLoading(true);
     setLoadError(null);
 
-    Promise.all([listGames(), listInstalls()])
-      .then(([catalog, localInstalls]) => {
+    Promise.all([listGames(), listInstalls(), listRunners()])
+      .then(([catalog, localInstalls, detectedRunners]) => {
         if (!isMounted) return;
 
         setManifests(catalog);
         setInstalls(localInstalls);
+        setRunners(detectedRunners);
         setSelectedGameId((currentGameId) => {
           const currentGameStillExists = catalog.some((game) => game.id === currentGameId);
 
@@ -186,6 +196,7 @@ function App() {
 
         setManifests([]);
         setInstalls([]);
+        setRunners([]);
         setSelectedGameId(null);
         setLoadError(error instanceof Error ? error.message : String(error));
       })
@@ -208,6 +219,14 @@ function App() {
   );
   const installedGames = useMemo(() => games.filter((game) => game.status === 'installed'), [games]);
   const manifestGames = useMemo(() => games.filter((game) => game.status === 'available'), [games]);
+  const availableRunners = useMemo(
+    () => runners.filter((runner) => runner.status === 'available'),
+    [runners],
+  );
+  const installableRunners = useMemo(
+    () => runners.filter((runner) => runner.installable || runner.status === 'installable'),
+    [runners],
+  );
 
   const selectedGame = useMemo(
     () => games.find((game) => game.id === selectedGameId) ?? games[0] ?? null,
@@ -591,6 +610,51 @@ function App() {
                     <span className="text-white/25">›</span>
                   </button>
                 ))}
+              </section>
+
+              <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-5 backdrop-blur-2xl">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.2em] text-launcher-muted">
+                      Runners
+                    </p>
+                    <h3 className="mt-1 text-lg font-black">Compatibilidade</h3>
+                  </div>
+                  <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black text-emerald-100 ring-1 ring-emerald-300/15">
+                    {availableRunners.length} ativos
+                  </span>
+                </div>
+
+                <div className="mt-4 space-y-2">
+                  {runners.slice(0, 4).map((runner) => (
+                    <div
+                      className="rounded-2xl bg-black/20 p-3 text-sm ring-1 ring-white/[0.08]"
+                      key={runner.id}
+                      title={runner.path ?? runner.installHint ?? runner.label}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="font-black text-white/90">{runner.label}</p>
+                        <span className={`rounded-full px-2 py-0.5 text-[0.62rem] font-black uppercase tracking-[0.14em] ring-1 ${
+                          runner.status === 'available'
+                            ? 'bg-emerald-400/10 text-emerald-100 ring-emerald-300/20'
+                            : 'bg-amber-400/10 text-amber-100 ring-amber-300/20'
+                        }`}
+                        >
+                          {formatRunnerStatus(runner.status)}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-launcher-muted">
+                        {formatRunner(runner.kind)} • {runner.source}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                {installableRunners.length > 0 && (
+                  <p className="mt-4 rounded-2xl bg-purple-500/[0.08] p-3 text-xs leading-5 text-purple-100 ring-1 ring-purple-300/15">
+                    Se Wine/Proton não estiverem disponíveis no sistema, o launcher já reserva opções gerenciadas para instalação futura.
+                  </p>
+                )}
               </section>
 
               {(actionMessage || actionError) && (

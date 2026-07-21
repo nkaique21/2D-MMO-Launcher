@@ -144,6 +144,20 @@ O launcher deve evoluir para suportar:
 
 Cada jogo pode usar um runner diferente. A decisão deve vir do manifesto e/ou das configurações persistidas, não de lógica hardcoded espalhada pela UI.
 
+### Descoberta e instalação de runners
+
+- A camada de runners deve seguir uma abordagem parecida com a do Twintail em conceito: primeiro detectar runners já disponíveis no sistema do usuário, depois oferecer opções gerenciadas pelo próprio launcher quando não houver uma opção adequada.
+- Detecção inicial desejada:
+  - Linux nativo sempre disponível em Linux;
+  - Wine/Wine64 no `PATH`;
+  - Proton no `PATH`, quando existir;
+  - `umu-run` como opção compatível com Proton/UMU;
+  - Proton instalado pela Steam em `compatibilitytools.d` e `steamapps/common`;
+  - runners gerenciados pelo launcher em uma pasta local de dados do app, como `runners/`.
+- Se Wine/Proton não forem encontrados, a UI deve indicar opções instaláveis/gerenciadas pelo launcher, por exemplo Wine isolado ou Proton-GE, sem depender exclusivamente do gerenciador de pacotes do sistema.
+- A implementação de download/instalação automática de runners deve ser separada da detecção. Primeiro listar e diagnosticar; depois baixar, extrair, registrar e versionar runners gerenciados.
+- Evitar prender RavenQuest/Archlight a um caminho fixo de Proton. Eles exigem runner Proton, mas a instância concreta deve ser resolvida pela camada de runners e/ou configuração persistida do usuário.
+
 ### Jogos iniciais do catálogo
 
 - RavenQuest;
@@ -323,6 +337,10 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - O manifesto do RavenQuest recebeu método `windowsInstaller` com URL `https://dw.ravenquest.io/ravenquest_installer.exe`, servindo como base para a futura etapa Proton/instalador Windows.
 - O manifesto do PokeXGames agora define `launch.executable` como `pxgme-linux` para execução nativa a partir da pasta registrada.
 - O manifesto do Grand Line Adventures agora define `launch.executable` como `glaclient-linux` para execução nativa a partir da pasta registrada.
+- Foi criada a base inicial de descoberta de runners com o comando Tauri `list_runners`.
+- `list_runners` detecta Linux nativo, Wine/Wine64/Proton/UMU via `PATH`, Proton instalado pela Steam e runners gerenciados pelo launcher no diretório de dados do app.
+- Quando Wine ou Proton não são encontrados, `list_runners` retorna opções `installable` para Wine gerenciado e Proton-GE gerenciado, preparando a futura instalação automática pelo launcher.
+- O frontend consome `listRunners()` e exibe um painel inicial de compatibilidade/runners na lateral, mostrando runners disponíveis e opções instaláveis.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -340,6 +358,8 @@ Próximo passo recomendado para desenvolvimento:
 
 3. **Camada de runners**
    - Extrair resolução de comando para um domínio `launcher`/`runner`.
+   - Transformar a descoberta atual de runners em módulo dedicado no backend, evitando concentrar tudo em `lib.rs`.
+   - Criar fluxo para instalar/registrar runners gerenciados pelo launcher quando Wine/Proton não existirem no sistema.
    - Implementar suporte progressivo a Wine/Proton para RavenQuest e Archlight.
    - Usar o instalador Windows do RavenQuest como base de teste para Proton/Wine.
    - Registrar sessão para futuro tempo jogado quando o spawn for bem-sucedido.

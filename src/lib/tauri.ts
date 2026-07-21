@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { GameInstall, GameManifest, LaunchResult } from '../types/manifest';
+import type { GameInstall, GameManifest, LaunchResult, RunnerInfo } from '../types/manifest';
 
 export function listGames() {
   return invoke<GameManifest[]>('list_games');
@@ -7,6 +7,10 @@ export function listGames() {
 
 export function listInstalls() {
   return invoke<GameInstall[]>('list_installs');
+}
+
+export function listRunners() {
+  return invoke<RunnerInfo[]>('list_runners');
 }
 
 export function locateExistingInstall(gameId: string) {
