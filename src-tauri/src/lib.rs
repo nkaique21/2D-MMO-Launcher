@@ -33,6 +33,7 @@ struct InstallMethod {
     #[serde(rename = "type")]
     kind: String,
     label: String,
+    url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

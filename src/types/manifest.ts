@@ -20,6 +20,7 @@ export type InstallationConfig = {
 export type InstallMethod = {
   type: string;
   label: string;
+  url?: string;
 };
 
 export type LaunchConfig = {

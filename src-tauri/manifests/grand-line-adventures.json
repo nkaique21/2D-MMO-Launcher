@@ -16,7 +16,7 @@
   },
   "launch": {
     "runner": "native",
-    "executable": null,
+    "executable": "glaclient-linux",
     "args": []
   },
   "update": {

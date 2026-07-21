@@ -319,6 +319,10 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - `launch_game` resolve manifesto + instalação salva, usa `runner_override` quando existir e executa via `Command::spawn` apenas para runner `native`.
 - Quando o runner ainda não é suportado ou `launch.executable` está ausente no manifesto, o backend retorna mensagens explícitas em vez de tentar executar algo indefinido.
 - O frontend expõe `launchGame(gameId)` e conectou o botão principal `Jogar`, mostrando estado `Iniciando...`, sucesso ou erro retornado pelo backend.
+- `InstallMethod` agora aceita `url` opcional no backend Rust e nos tipos TypeScript.
+- O manifesto do RavenQuest recebeu método `windowsInstaller` com URL `https://dw.ravenquest.io/ravenquest_installer.exe`, servindo como base para a futura etapa Proton/instalador Windows.
+- O manifesto do PokeXGames agora define `launch.executable` como `pxgme-linux` para execução nativa a partir da pasta registrada.
+- O manifesto do Grand Line Adventures agora define `launch.executable` como `glaclient-linux` para execução nativa a partir da pasta registrada.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -326,7 +330,8 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 Próximo passo recomendado para desenvolvimento:
 
 1. **Completar dados de execução nos manifestos**
-   - Definir `launch.executable` para jogos nativos quando houver executável conhecido.
+   - Definir `launch.executable` para outros jogos nativos quando houver executável conhecido.
+   - Confirmar executable/path real de Zezenia e Medivia.
    - Avaliar se o manifesto precisa de campos adicionais para validação de pasta, executáveis alternativos ou argumentos por plataforma.
 
 2. **Validar instalações registradas**
@@ -336,6 +341,7 @@ Próximo passo recomendado para desenvolvimento:
 3. **Camada de runners**
    - Extrair resolução de comando para um domínio `launcher`/`runner`.
    - Implementar suporte progressivo a Wine/Proton para RavenQuest e Archlight.
+   - Usar o instalador Windows do RavenQuest como base de teste para Proton/Wine.
    - Registrar sessão para futuro tempo jogado quando o spawn for bem-sucedido.
 
 4. **Modularizar backend SQLite**

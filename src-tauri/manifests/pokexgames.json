@@ -16,7 +16,7 @@
   },
   "launch": {
     "runner": "native",
-    "executable": null,
+    "executable": "pxgme-linux",
     "args": []
   },
   "update": {
