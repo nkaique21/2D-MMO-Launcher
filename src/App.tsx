@@ -11,6 +11,7 @@ import {
   removeInstall,
   runGameUpdate,
   runGameRemoteUpdate,
+  getGameUpdateProgress,
 } from './lib/tauri';
 import type { GameInstall, GameManifest, GameUpdateProgress, RunnerInfo } from './types/manifest';
 
@@ -220,6 +221,10 @@ function formatElapsedSeconds(timestamp: number | null, now: number) {
   return `há ${elapsedSeconds}s`;
 }
 
+function isUpdateFinished(progress: GameUpdateProgress | null) {
+  return progress?.status === 'done' || progress?.status === 'error';
+}
+
 function getUpdatePercent(progress: GameUpdateProgress | null) {
   if (!progress) return 0;
   if (progress.totalFiles <= 0) return progress.status === 'manifest' ? 5 : 0;
@@ -295,6 +300,7 @@ function App() {
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState<GameUpdateProgress | null>(null);
   const [updateProgressReceivedAt, setUpdateProgressReceivedAt] = useState<number | null>(null);
+  const [updateProgressSource, setUpdateProgressSource] = useState<string | null>(null);
   const [nowTimestamp, setNowTimestamp] = useState(() => Date.now());
   const [isLaunching, setIsLaunching] = useState(false);
   const [reloadSignal, setReloadSignal] = useState(0);
@@ -366,6 +372,7 @@ function App() {
 
       setUpdateProgress(event.payload);
       setUpdateProgressReceivedAt(Date.now());
+      setUpdateProgressSource('evento Tauri');
     });
 
     return () => {
@@ -379,6 +386,70 @@ function App() {
 
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!selectedGameId) return undefined;
+
+    const progressBelongsToSelectedGame = updateProgress?.gameId === selectedGameId;
+    const shouldPollRunnerLog = pendingActionId === 'run-remote-update'
+      || (progressBelongsToSelectedGame && !isUpdateFinished(updateProgress));
+
+    if (!shouldPollRunnerLog) return undefined;
+
+    let isCancelled = false;
+
+    async function pollRunnerLogProgress() {
+      if (!selectedGameId || isCancelled) return;
+
+      const lastProgressAge = updateProgressReceivedAt ? Date.now() - updateProgressReceivedAt : Number.POSITIVE_INFINITY;
+      const shouldUseLogFallback = lastProgressAge > 2500
+        || updateProgressSource === null
+        || updateProgressSource === 'local'
+        || updateProgressSource === 'runner.log';
+
+      if (!shouldUseLogFallback) return;
+
+      try {
+        const progressFromLog = await getGameUpdateProgress(selectedGameId);
+
+        if (!progressFromLog || isCancelled) return;
+
+        setUpdateProgress(progressFromLog);
+        setUpdateProgressReceivedAt(Date.now());
+        setUpdateProgressSource('runner.log');
+
+        if (progressFromLog.status === 'done') {
+          setPendingActionId((currentActionId) => (
+            currentActionId === 'run-remote-update' ? null : currentActionId
+          ));
+          setActionError(null);
+          setActionMessage((currentMessage) => (
+            currentMessage === null || currentMessage === 'Preparando atualização dos arquivos...'
+              ? 'Update concluído conforme runner.log.'
+              : currentMessage
+          ));
+        }
+
+        if (progressFromLog.status === 'error') {
+          setPendingActionId((currentActionId) => (
+            currentActionId === 'run-remote-update' ? null : currentActionId
+          ));
+          setActionError(progressFromLog.error ?? 'Falha detectada no runner.log durante o update remoto.');
+        }
+      } catch {
+        // O fallback por log é diagnóstico e não deve substituir mensagens do fluxo principal.
+      }
+    }
+
+    const initialTimeout = window.setTimeout(() => void pollRunnerLogProgress(), 1500);
+    const interval = window.setInterval(() => void pollRunnerLogProgress(), 2500);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(initialTimeout);
+      window.clearInterval(interval);
+    };
+  }, [pendingActionId, selectedGameId, updateProgress, updateProgressReceivedAt, updateProgressSource]);
 
   const installedGameIds = useMemo(
     () => new Set(installs.map((install) => install.gameId)),
@@ -603,6 +674,7 @@ function App() {
       setPendingActionId(action.id);
       setUpdateProgress(createPreparingUpdateProgress(selectedGame.id));
       setUpdateProgressReceivedAt(Date.now());
+      setUpdateProgressSource('local');
       setActionMessage('Preparando atualização dos arquivos...');
 
       try {
@@ -901,6 +973,7 @@ function App() {
                           <p className="font-black uppercase tracking-[0.16em] text-sky-200">Diagnóstico</p>
                           <p className="mt-2">Stage: <strong>{activeUpdateProgress.stage ?? 'sem stage'}</strong></p>
                           <p>Último evento: <strong>{lastUpdateEventLabel}</strong></p>
+                          <p>Fonte: <strong>{updateProgressSource ?? 'aguardando'}</strong></p>
                           <p>Status: <strong>{activeUpdateProgress.status}</strong></p>
                         </div>
                         <div className="min-w-0">
@@ -1002,6 +1075,7 @@ function App() {
                   <div className="mt-4 space-y-1 rounded-2xl bg-black/20 p-3 text-xs leading-5 ring-1 ring-white/[0.06]">
                     <p><strong>Etapa:</strong> {activeUpdateProgress.stageLabel ?? 'Aguardando etapa'}</p>
                     <p><strong>Evento:</strong> {lastUpdateEventLabel}</p>
+                    <p><strong>Fonte:</strong> {updateProgressSource ?? 'aguardando'}</p>
                     <p className="break-all"><strong>Log:</strong> {activeUpdateProgress.logPath ?? 'aguardando backend'}</p>
                     {activeUpdateProgress.targetDir && (
                       <p className="break-all"><strong>Alvo:</strong> {activeUpdateProgress.targetDir}</p>

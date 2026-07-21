@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -1170,6 +1170,180 @@ fn log_and_emit_update_error(
     );
 
     logged_message
+}
+
+fn update_stage_label_from_stage(stage: &str) -> String {
+    match stage {
+        "start" => "Preparar update",
+        "openDatabase" => "Abrir banco local",
+        "loadInstall" => "Carregar instalação",
+        "loadLocalManifest" => "Carregar manifesto local",
+        "reconcileInstall" => "Reconciliar instalação",
+        "validateInstallPath" => "Validar pasta registrada",
+        "spawnBlockingTask" => "Enviar tarefa para background",
+        "resolveRemoteManifest" => "Resolver manifesto remoto",
+        "resolveTargetDir" => "Resolver pasta alvo",
+        "prepareTargetDir" => "Preparar pasta alvo",
+        "downloadRemoteManifest" => "Baixar manifesto remoto",
+        "decodeRemoteManifest" => "Decodificar manifesto remoto",
+        "buildFileList" => "Montar lista de arquivos",
+        "checkingFiles" => "Verificar arquivos locais",
+        "downloadingFiles" => "Baixar arquivos divergentes",
+        "validateDownloadedFile" => "Validar arquivo baixado",
+        "applyDownloadedFile" => "Aplicar arquivo baixado",
+        "done" => "Concluído",
+        _ => stage,
+    }
+    .to_string()
+}
+
+fn update_status_from_stage(stage: &str) -> String {
+    match stage {
+        "downloadRemoteManifest" | "decodeRemoteManifest" | "buildFileList" => "manifest",
+        "checkingFiles" => "checking",
+        "downloadingFiles" | "validateDownloadedFile" | "applyDownloadedFile" => "downloading",
+        "done" => "done",
+        _ => "preparing",
+    }
+    .to_string()
+}
+
+fn read_recent_log_text(log_path: &Path, max_bytes: u64) -> Result<String, String> {
+    let mut file = fs::File::open(log_path)
+        .map_err(|error| format!("Não foi possível abrir log {}: {error}", log_path.display()))?;
+    let len = file
+        .metadata()
+        .map_err(|error| format!("Não foi possível inspecionar log {}: {error}", log_path.display()))?
+        .len();
+    let start = len.saturating_sub(max_bytes);
+    let mut bytes = Vec::new();
+
+    file.seek(SeekFrom::Start(start))
+        .map_err(|error| format!("Não foi possível posicionar leitura do log: {error}"))?;
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("Não foi possível ler log {}: {error}", log_path.display()))?;
+
+    Ok(String::from_utf8_lossy(&bytes).to_string())
+}
+
+fn progress_message_from_log(status: &str, stage_label: &str, checked: usize, total: usize, current_file: Option<&str>) -> String {
+    if status == "done" {
+        return "Update concluído.".to_string();
+    }
+
+    if status == "downloading" {
+        return current_file
+            .map(|file| format!("Baixando {file}"))
+            .unwrap_or_else(|| "Baixando arquivos divergentes...".to_string());
+    }
+
+    if status == "checking" && total > 0 {
+        return format!("Verificando {checked} de {total} arquivos...");
+    }
+
+    format!("{stage_label}...")
+}
+
+fn parse_latest_update_progress_from_log(
+    game_id: &str,
+    log_path: &Path,
+    log_text: &str,
+) -> Option<GameUpdateProgress> {
+    let mut found_remote_update = false;
+    let mut status = "preparing".to_string();
+    let mut stage = "start".to_string();
+    let mut stage_label = "Preparar update".to_string();
+    let mut checked_files = 0_usize;
+    let mut updated_files = 0_usize;
+    let mut total_files = 0_usize;
+    let mut current_file: Option<String> = None;
+    let mut target_dir: Option<String> = None;
+    let mut error: Option<String> = None;
+
+    for line in log_text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+
+        match key {
+            "action" if value == "run_game_remote_update" => {
+                found_remote_update = true;
+                status = "preparing".to_string();
+                stage = "start".to_string();
+                stage_label = update_stage_label_from_stage(&stage);
+                checked_files = 0;
+                updated_files = 0;
+                total_files = 0;
+                current_file = None;
+                target_dir = None;
+                error = None;
+            }
+            "remote_update_stage" => {
+                found_remote_update = true;
+                stage = value.to_string();
+                stage_label = update_stage_label_from_stage(value);
+                status = update_status_from_stage(value);
+            }
+            "remote_update_stage_label" => {
+                stage_label = value.to_string();
+            }
+            "remote_update_progress" => {
+                found_remote_update = true;
+                status = value.to_string();
+
+                if value == "checking" {
+                    stage = "checkingFiles".to_string();
+                    stage_label = update_stage_label_from_stage(&stage);
+                } else if value == "downloading" {
+                    stage = "downloadingFiles".to_string();
+                    stage_label = update_stage_label_from_stage(&stage);
+                }
+            }
+            "remote_update_finished" if value == "true" => {
+                found_remote_update = true;
+                status = "done".to_string();
+                stage = "done".to_string();
+                stage_label = update_stage_label_from_stage(&stage);
+            }
+            "checked_files" => checked_files = value.parse().unwrap_or(checked_files),
+            "updated_files" => updated_files = value.parse().unwrap_or(updated_files),
+            "total_files" | "remote_file_count" => total_files = value.parse().unwrap_or(total_files),
+            "current_file" => current_file = Some(value.to_string()),
+            "update_target_dir" => target_dir = Some(value.to_string()),
+            "error" => {
+                error = Some(value.to_string());
+                status = "error".to_string();
+            }
+            _ => {}
+        }
+    }
+
+    if !found_remote_update {
+        return None;
+    }
+
+    let message = progress_message_from_log(
+        &status,
+        &stage_label,
+        checked_files,
+        total_files,
+        current_file.as_deref(),
+    );
+
+    Some(GameUpdateProgress {
+        game_id: game_id.to_string(),
+        status,
+        stage: Some(stage),
+        stage_label: Some(stage_label),
+        checked_files,
+        updated_files,
+        total_files,
+        current_file,
+        message,
+        target_dir,
+        log_path: Some(log_path.to_string_lossy().to_string()),
+        error,
+    })
 }
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
@@ -2688,6 +2862,30 @@ fn run_game_update(app: tauri::AppHandle, game_id: String) -> Result<LaunchResul
 }
 
 #[tauri::command]
+fn get_game_update_progress(
+    app: tauri::AppHandle,
+    game_id: String,
+) -> Result<Option<GameUpdateProgress>, String> {
+    let game_id = game_id.trim().to_string();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    let log_path = runner_log_path(&app, &game_id)?;
+
+    if !log_path.exists() {
+        return Ok(None);
+    }
+
+    let log_text = read_recent_log_text(&log_path, 768 * 1024)?;
+
+    Ok(parse_latest_update_progress_from_log(
+        &game_id, &log_path, &log_text,
+    ))
+}
+
+#[tauri::command]
 async fn run_game_remote_update(
     app: tauri::AppHandle,
     game_id: String,
@@ -3014,6 +3212,7 @@ pub fn run() {
             locate_existing_install,
             download_and_run_installer,
             run_game_update,
+            get_game_update_progress,
             run_game_remote_update,
             open_install_folder,
             remove_install,
