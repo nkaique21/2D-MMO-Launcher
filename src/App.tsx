@@ -1,124 +1,242 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { listGames } from './lib/tauri';
+import type { GameManifest } from './types/manifest';
 
-type Game = {
-  id: string;
-  name: string;
+type InstallationStatus = 'installed' | 'available';
+
+type GameVisualMetadata = {
   shortName: string;
-  description: string;
-  status: 'installed' | 'available';
-  installLabel: string;
-  runner: 'Native' | 'Proton';
-  protonOnly?: boolean;
-  banner: string;
-  icon: string;
   accent: string;
   softAccent: string;
   meta: string;
 };
 
-const games: Game[] = [
-  {
-    id: 'ravenquest',
-    name: 'RavenQuest',
+type GameViewModel = GameManifest &
+  GameVisualMetadata & {
+    installLabel: string;
+    protonOnly: boolean;
+    runnerLabel: string;
+    status: InstallationStatus;
+  };
+
+const fallbackVisualMetadata: GameVisualMetadata = {
+  shortName: '2D',
+  accent: 'from-purple-500 via-indigo-500 to-sky-500',
+  softAccent: 'bg-purple-500/15 text-purple-100 ring-purple-300/20',
+  meta: 'MMORPG 2D • Manifesto local',
+};
+
+// Metadados puramente visuais até esses campos evoluírem para o manifesto.
+// Não representam regras de negócio nem estado local de instalação.
+const visualMetadataByGameId: Record<string, GameVisualMetadata> = {
+  ravenquest: {
     shortName: 'RQ',
-    description: 'Economia viva, mundo persistente e progressão aberta em um MMORPG 2D moderno.',
-    status: 'available',
-    installLabel: 'Manifesto disponível',
-    runner: 'Proton',
-    protonOnly: true,
-    banner: '/assets/games/ravenquest/banner.png',
-    icon: '/assets/games/ravenquest/icon.png',
     accent: 'from-violet-500 via-fuchsia-500 to-rose-500',
     softAccent: 'bg-violet-500/15 text-violet-100 ring-violet-300/20',
     meta: 'Sandbox • Open world',
   },
-  {
-    id: 'archlight',
-    name: 'Archlight',
+  archlight: {
     shortName: 'AL',
-    description: 'Progressão customizada, combate rápido e foco em temporadas para fãs de MMORPG 2D.',
-    status: 'available',
-    installLabel: 'Manifesto disponível',
-    runner: 'Proton',
-    protonOnly: true,
-    banner: '/assets/games/archlight/banner.png',
-    icon: '/assets/games/archlight/icon.png',
     accent: 'from-orange-400 via-red-500 to-purple-700',
     softAccent: 'bg-orange-500/15 text-orange-100 ring-orange-300/20',
     meta: 'Seasonal • Custom systems',
   },
-  {
-    id: 'pokexgames',
-    name: 'PokeXGames',
+  pokexgames: {
     shortName: 'PXG',
-    description: 'Aventura monster-catching em formato MMO com instalação localizada manualmente.',
-    status: 'installed',
-    installLabel: 'Instalado',
-    runner: 'Native',
-    banner: '/assets/games/pokexgames/banner.png',
-    icon: '/assets/games/pokexgames/icon.png',
     accent: 'from-indigo-500 via-purple-500 to-sky-500',
     softAccent: 'bg-indigo-500/15 text-indigo-100 ring-indigo-300/20',
     meta: 'Monster catching • Manual',
   },
-  {
-    id: 'grand-line-adventures',
-    name: 'Grand Line Adventures',
+  'grand-line-adventures': {
     shortName: 'GLA',
-    description: 'Aventura 2D inspirada em anime, pronta para entrar no catálogo por manifesto.',
-    status: 'available',
-    installLabel: 'Manifesto disponível',
-    runner: 'Native',
-    banner: '/assets/games/grand-line-adventures/banner.png',
-    icon: '/assets/games/grand-line-adventures/icon.png',
     accent: 'from-sky-400 via-cyan-500 to-blue-700',
     softAccent: 'bg-sky-500/15 text-sky-100 ring-sky-300/20',
     meta: 'Anime • Adventure',
   },
-  {
-    id: 'zezenia',
-    name: 'Zezenia',
+  zezenia: {
     shortName: 'ZZ',
-    description: 'MMORPG clássico com instalação existente localizada pelo launcher.',
-    status: 'installed',
-    installLabel: 'Instalado',
-    runner: 'Native',
-    banner: '/assets/games/zezenia/banner.png',
-    icon: '/assets/games/zezenia/icon.png',
     accent: 'from-emerald-400 via-teal-500 to-purple-600',
     softAccent: 'bg-emerald-500/15 text-emerald-100 ring-emerald-300/20',
     meta: 'Classic • Persistent world',
   },
-  {
-    id: 'medivia',
-    name: 'Medivia',
+  medivia: {
     shortName: 'MV',
-    description: 'Experiência old-school com foco em exploração e comunidade.',
-    status: 'installed',
-    installLabel: 'Instalado',
-    runner: 'Native',
-    banner: '/assets/games/medivia/banner.png',
-    icon: '/assets/games/medivia/icon.png',
     accent: 'from-amber-300 via-yellow-600 to-stone-900',
     softAccent: 'bg-amber-500/15 text-amber-100 ring-amber-300/20',
     meta: 'Old school • Exploration',
   },
-];
+};
 
-const installedGames = games.filter((game) => game.status === 'installed');
-const manifestGames = games.filter((game) => game.status === 'available');
+// TODO(SQLite): substituir por instalações persistidas em `installs`.
+// Manifestos descrevem o catálogo; este Set temporário simula o estado local do usuário.
+const temporaryInstalledGameIds = new Set(['pokexgames', 'zezenia', 'medivia']);
+
+function buildShortName(name: string) {
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word[0])
+    .join('')
+    .slice(0, 3)
+    .toUpperCase();
+
+  return initials || fallbackVisualMetadata.shortName;
+}
+
+function getVisualMetadata(game: GameManifest): GameVisualMetadata {
+  return visualMetadataByGameId[game.id] ?? {
+    ...fallbackVisualMetadata,
+    shortName: buildShortName(game.name),
+  };
+}
+
+function formatRunner(runner: string) {
+  const normalizedRunner = runner.toLowerCase();
+
+  if (normalizedRunner === 'native') return 'Native';
+  if (normalizedRunner === 'proton') return 'Proton';
+  if (normalizedRunner === 'wine') return 'Wine';
+  if (normalizedRunner === 'steam') return 'Steam';
+
+  return runner || 'Não definido';
+}
+
+function toViewModel(game: GameManifest): GameViewModel {
+  const status: InstallationStatus = temporaryInstalledGameIds.has(game.id) ? 'installed' : 'available';
+  const runner = game.launch.runner.toLowerCase();
+
+  return {
+    ...game,
+    ...getVisualMetadata(game),
+    status,
+    installLabel: status === 'installed' ? 'Instalado' : 'Manifesto disponível',
+    protonOnly: runner === 'proton',
+    runnerLabel: formatRunner(game.launch.runner),
+  };
+}
+
+function getSecondaryActions(game: GameViewModel) {
+  if (game.status === 'installed') {
+    return ['Verificar arquivos', 'Abrir pasta', 'Configurar'];
+  }
+
+  const installActions = game.installation.methods.map((method) => method.label);
+
+  return [...installActions, 'Detalhes do manifesto', 'Configurar runner'];
+}
 
 function App() {
-  const [selectedGameId, setSelectedGameId] = useState(games[0].id);
+  const [manifests, setManifests] = useState<GameManifest[]>([]);
+  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadSignal, setReloadSignal] = useState(0);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    setIsLoading(true);
+    setLoadError(null);
+
+    listGames()
+      .then((catalog) => {
+        if (!isMounted) return;
+
+        setManifests(catalog);
+        setSelectedGameId((currentGameId) => {
+          const currentGameStillExists = catalog.some((game) => game.id === currentGameId);
+
+          if (currentGameStillExists) return currentGameId;
+
+          return catalog[0]?.id ?? null;
+        });
+      })
+      .catch((error: unknown) => {
+        if (!isMounted) return;
+
+        setManifests([]);
+        setSelectedGameId(null);
+        setLoadError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (isMounted) setIsLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [reloadSignal]);
+
+  const games = useMemo(() => manifests.map(toViewModel), [manifests]);
+  const installedGames = useMemo(() => games.filter((game) => game.status === 'installed'), [games]);
+  const manifestGames = useMemo(() => games.filter((game) => game.status === 'available'), [games]);
 
   const selectedGame = useMemo(
-    () => games.find((game) => game.id === selectedGameId) ?? games[0],
-    [selectedGameId],
+    () => games.find((game) => game.id === selectedGameId) ?? games[0] ?? null,
+    [games, selectedGameId],
   );
 
-  const secondaryActions = selectedGame.status === 'installed'
-    ? ['Verificar arquivos', 'Abrir pasta', 'Configurar']
-    : ['Instalar', 'Detalhes do manifesto', 'Configurar runner'];
+  if (isLoading && !selectedGame) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-launcher-bg px-6 text-launcher-text">
+        <section className="max-w-md rounded-[2rem] border border-white/10 bg-launcher-panel p-8 text-center shadow-2xl shadow-black/40">
+          <div className="mx-auto grid h-16 w-16 place-items-center rounded-[1.35rem] bg-white/10 ring-1 ring-white/15 shadow-glow">
+            <span className="bg-gradient-to-br from-white to-purple-200 bg-clip-text text-lg font-black text-transparent">
+              2D
+            </span>
+          </div>
+          <p className="mt-6 text-xs font-black uppercase tracking-[0.28em] text-purple-300">
+            Catálogo por manifesto
+          </p>
+          <h1 className="mt-2 text-2xl font-black tracking-tight">Carregando jogos locais...</h1>
+          <p className="mt-3 text-sm leading-6 text-launcher-muted">
+            O launcher está lendo os manifestos disponíveis no backend Tauri.
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  if (loadError && !selectedGame) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-launcher-bg px-6 text-launcher-text">
+        <section className="max-w-lg rounded-[2rem] border border-red-300/20 bg-launcher-panel p-8 text-center shadow-2xl shadow-black/40">
+          <p className="text-xs font-black uppercase tracking-[0.28em] text-red-200">
+            Falha ao carregar catálogo
+          </p>
+          <h1 className="mt-2 text-2xl font-black tracking-tight">Não foi possível listar os manifestos</h1>
+          <p className="mt-3 rounded-2xl bg-black/25 p-4 text-left text-sm leading-6 text-launcher-muted ring-1 ring-white/[0.08]">
+            {loadError}
+          </p>
+          <button
+            className="mt-6 rounded-2xl bg-white px-6 py-3 text-sm font-black uppercase tracking-[0.16em] text-slate-950 transition hover:-translate-y-0.5 hover:bg-purple-100"
+            onClick={() => setReloadSignal((signal) => signal + 1)}
+            type="button"
+          >
+            Tentar novamente
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  if (!selectedGame) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-launcher-bg px-6 text-launcher-text">
+        <section className="max-w-md rounded-[2rem] border border-white/10 bg-launcher-panel p-8 text-center shadow-2xl shadow-black/40">
+          <p className="text-xs font-black uppercase tracking-[0.28em] text-purple-300">
+            Catálogo vazio
+          </p>
+          <h1 className="mt-2 text-2xl font-black tracking-tight">Nenhum manifesto encontrado</h1>
+          <p className="mt-3 text-sm leading-6 text-launcher-muted">
+            Adicione arquivos JSON em <strong>src-tauri/manifests</strong> para popular o launcher.
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  const secondaryActions = getSecondaryActions(selectedGame);
 
   return (
     <main className="min-h-screen overflow-hidden bg-launcher-bg text-launcher-text">
@@ -134,30 +252,36 @@ function App() {
             <p className="mb-1 [writing-mode:vertical-rl] rotate-180 text-[0.63rem] font-black uppercase tracking-[0.28em] text-launcher-muted">
               Instalados
             </p>
-            {installedGames.map((game) => {
-              const isActive = game.id === selectedGame.id;
+            {installedGames.length > 0 ? (
+              installedGames.map((game) => {
+                const isActive = game.id === selectedGame.id;
 
-              return (
-                <button
-                  aria-label={game.name}
-                  className={`group relative grid h-16 w-16 place-items-center rounded-3xl border transition duration-200 ${
-                    isActive
-                      ? 'border-purple-300/70 bg-white/15 shadow-glow'
-                      : 'border-white/10 bg-white/[0.055] hover:border-white/25 hover:bg-white/10'
-                  }`}
-                  key={game.id}
-                  onClick={() => setSelectedGameId(game.id)}
-                  title={game.name}
-                  type="button"
-                >
-                  <span className={`absolute inset-2 rounded-[1.15rem] bg-gradient-to-br ${game.accent} opacity-80 blur-[1px]`} />
-                  <span className="relative text-sm font-black tracking-tight text-white drop-shadow">
-                    {game.shortName}
-                  </span>
-                  {isActive && <span className="absolute -right-5 h-9 w-1 rounded-full bg-purple-300" />}
-                </button>
-              );
-            })}
+                return (
+                  <button
+                    aria-label={game.name}
+                    className={`group relative grid h-16 w-16 place-items-center rounded-3xl border transition duration-200 ${
+                      isActive
+                        ? 'border-purple-300/70 bg-white/15 shadow-glow'
+                        : 'border-white/10 bg-white/[0.055] hover:border-white/25 hover:bg-white/10'
+                    }`}
+                    key={game.id}
+                    onClick={() => setSelectedGameId(game.id)}
+                    title={game.name}
+                    type="button"
+                  >
+                    <span className={`absolute inset-2 rounded-[1.15rem] bg-gradient-to-br ${game.accent} opacity-80 blur-[1px]`} />
+                    <span className="relative text-sm font-black tracking-tight text-white drop-shadow">
+                      {game.shortName}
+                    </span>
+                    {isActive && <span className="absolute -right-5 h-9 w-1 rounded-full bg-purple-300" />}
+                  </button>
+                );
+              })
+            ) : (
+              <p className="max-w-16 text-center text-[0.65rem] font-semibold leading-4 text-launcher-muted">
+                Nenhuma instalação registrada
+              </p>
+            )}
           </div>
 
           <button
@@ -178,48 +302,54 @@ function App() {
                 <h1 className="mt-1 text-2xl font-black tracking-tight">2D MMO Launcher</h1>
               </div>
               <div className="flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.045] px-4 py-2 text-xs font-semibold text-launcher-muted">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.75)]" />
-                Manifestos locais carregados
+                <span className={`h-2 w-2 rounded-full ${loadError ? 'bg-amber-300 shadow-[0_0_18px_rgba(252,211,77,0.75)]' : 'bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.75)]'}`} />
+                {loadError ? 'Catálogo local em modo degradado' : 'Manifestos locais carregados'}
               </div>
             </div>
 
             <div className="mt-6 flex gap-3 overflow-x-auto pb-1">
-              {manifestGames.map((game) => {
-                const isActive = game.id === selectedGame.id;
+              {manifestGames.length > 0 ? (
+                manifestGames.map((game) => {
+                  const isActive = game.id === selectedGame.id;
 
-                return (
-                  <button
-                    className={`group min-w-[218px] rounded-3xl border p-3 text-left transition duration-200 ${
-                      isActive
-                        ? 'border-purple-300/60 bg-white/[0.14] shadow-glow'
-                        : 'border-white/10 bg-white/[0.055] hover:border-white/25 hover:bg-white/10'
-                    }`}
-                    key={game.id}
-                    onClick={() => setSelectedGameId(game.id)}
-                    type="button"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br ${game.accent} text-xs font-black shadow-lg shadow-black/30`}>
-                        {game.shortName}
+                  return (
+                    <button
+                      className={`group min-w-[218px] rounded-3xl border p-3 text-left transition duration-200 ${
+                        isActive
+                          ? 'border-purple-300/60 bg-white/[0.14] shadow-glow'
+                          : 'border-white/10 bg-white/[0.055] hover:border-white/25 hover:bg-white/10'
+                      }`}
+                      key={game.id}
+                      onClick={() => setSelectedGameId(game.id)}
+                      type="button"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br ${game.accent} text-xs font-black shadow-lg shadow-black/30`}>
+                          {game.shortName}
+                        </div>
+                        <div className="min-w-0">
+                          <h2 className="truncate text-sm font-black text-white">{game.name}</h2>
+                          <p className="mt-0.5 truncate text-xs text-launcher-muted">{game.installLabel}</p>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <h2 className="truncate text-sm font-black text-white">{game.name}</h2>
-                        <p className="mt-0.5 truncate text-xs text-launcher-muted">{game.installLabel}</p>
-                      </div>
-                    </div>
-                    <div className="mt-3 flex items-center gap-2">
-                      <span className={`rounded-full px-2.5 py-1 text-[0.63rem] font-black uppercase tracking-[0.16em] ring-1 ${game.softAccent}`}>
-                        {game.runner}
-                      </span>
-                      {game.protonOnly && (
-                        <span className="rounded-full bg-white/[0.08] px-2.5 py-1 text-[0.63rem] font-bold text-purple-100 ring-1 ring-white/10">
-                          exclusivo
+                      <div className="mt-3 flex items-center gap-2">
+                        <span className={`rounded-full px-2.5 py-1 text-[0.63rem] font-black uppercase tracking-[0.16em] ring-1 ${game.softAccent}`}>
+                          {game.runnerLabel}
                         </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+                        {game.protonOnly && (
+                          <span className="rounded-full bg-white/[0.08] px-2.5 py-1 text-[0.63rem] font-bold text-purple-100 ring-1 ring-white/10">
+                            exclusivo
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })
+              ) : (
+                <div className="min-w-[260px] rounded-3xl border border-white/10 bg-white/[0.055] p-4 text-sm text-launcher-muted">
+                  Todos os jogos carregados estão marcados como instalados temporariamente.
+                </div>
+              )}
             </div>
           </header>
 
@@ -229,7 +359,7 @@ function App() {
                 <div
                   className="absolute inset-0 bg-cover bg-center opacity-70"
                   style={{
-                    backgroundImage: `linear-gradient(90deg, rgba(7,7,16,0.92) 0%, rgba(7,7,16,0.58) 46%, rgba(7,7,16,0.26) 100%), url(${selectedGame.banner})`,
+                    backgroundImage: `linear-gradient(90deg, rgba(7,7,16,0.92) 0%, rgba(7,7,16,0.58) 46%, rgba(7,7,16,0.26) 100%), url(${selectedGame.assets.banner})`,
                   }}
                 />
                 <div className={`absolute inset-0 bg-gradient-to-br ${selectedGame.accent} opacity-20`} />
@@ -292,7 +422,7 @@ function App() {
                 <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
                   <div className="rounded-2xl bg-black/20 p-4 ring-1 ring-white/[0.08]">
                     <p className="text-xs text-launcher-muted">Runner</p>
-                    <p className="mt-1 font-black">{selectedGame.runner}</p>
+                    <p className="mt-1 font-black">{selectedGame.runnerLabel}</p>
                   </div>
                   <div className="rounded-2xl bg-black/20 p-4 ring-1 ring-white/[0.08]">
                     <p className="text-xs text-launcher-muted">Estado</p>
@@ -319,7 +449,7 @@ function App() {
                   Nota de compatibilidade
                 </p>
                 <p className="mt-3 text-sm leading-6 text-launcher-muted">
-                  RavenQuest e Archlight ficam marcados como exclusivos para execução via Proton.
+                  Jogos com <strong>runner: proton</strong> no manifesto ficam marcados como Proton obrigatório.
                   Os demais podem manter runner nativo quando o manifesto permitir.
                 </p>
               </section>
