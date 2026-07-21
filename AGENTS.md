@@ -52,6 +52,7 @@ Evite criar `if game.id === "..."` no frontend ou backend. Exceções temporári
 - `src/types/manifest.ts`: tipos TypeScript dos manifestos.
 - `src/lib/tauri.ts`: ponte frontend para comandos Tauri.
 - `src-tauri/src/lib.rs`: comandos/backend Tauri.
+- `src-tauri/src/runners.rs`: descoberta/listagem inicial de runners disponíveis ou instaláveis.
 - `src-tauri/manifests/*.json`: manifestos locais dos jogos.
 - `src-tauri/tauri.conf.json`: configuração principal do Tauri.
 
@@ -341,6 +342,7 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - `list_runners` detecta Linux nativo, Wine/Wine64/Proton/UMU via `PATH`, Proton instalado pela Steam e runners gerenciados pelo launcher no diretório de dados do app.
 - Quando Wine ou Proton não são encontrados, `list_runners` retorna opções `installable` para Wine gerenciado e Proton-GE gerenciado, preparando a futura instalação automática pelo launcher.
 - O frontend consome `listRunners()` e exibe um painel inicial de compatibilidade/runners na lateral, mostrando runners disponíveis e opções instaláveis.
+- A descoberta de runners foi extraída de `src-tauri/src/lib.rs` para o módulo dedicado `src-tauri/src/runners.rs`, mantendo o contrato Tauri `list_runners` sem alteração para o frontend.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -358,7 +360,7 @@ Próximo passo recomendado para desenvolvimento:
 
 3. **Camada de runners**
    - Extrair resolução de comando para um domínio `launcher`/`runner`.
-   - Transformar a descoberta atual de runners em módulo dedicado no backend, evitando concentrar tudo em `lib.rs`.
+   - Evoluir o módulo `src-tauri/src/runners.rs` para resolver o runner concreto usado por cada jogo.
    - Criar fluxo para instalar/registrar runners gerenciados pelo launcher quando Wine/Proton não existirem no sistema.
    - Implementar suporte progressivo a Wine/Proton para RavenQuest e Archlight.
    - Usar o instalador Windows do RavenQuest como base de teste para Proton/Wine.
