@@ -1,9 +1,9 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tauri::Manager;
 
 mod runners;
@@ -174,7 +174,11 @@ fn sanitize_path_segment(value: &str) -> String {
     value
         .chars()
         .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+            if character.is_ascii_alphanumeric()
+                || character == '-'
+                || character == '_'
+                || character == '.'
+            {
                 character
             } else {
                 '_'
@@ -230,6 +234,49 @@ fn download_file(url: &str, destination: &PathBuf) -> Result<(), String> {
     })?;
 
     Ok(())
+}
+
+fn logs_dir(app: &tauri::AppHandle, game_id: &str) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        format!("Não foi possível resolver o diretório de dados do app: {error}")
+    })?;
+    let logs_dir = app_data_dir
+        .join("logs")
+        .join(sanitize_path_segment(game_id));
+
+    fs::create_dir_all(&logs_dir).map_err(|error| {
+        format!(
+            "Não foi possível criar o diretório de logs {}: {error}",
+            logs_dir.display()
+        )
+    })?;
+
+    Ok(logs_dir)
+}
+
+fn attach_process_logs(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    command: &mut Command,
+) -> Result<PathBuf, String> {
+    let log_path = logs_dir(app, game_id)?.join("runner.log");
+    let stdout_log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| format!("Não foi possível abrir log {}: {error}", log_path.display()))?;
+    let stderr_log = stdout_log.try_clone().map_err(|error| {
+        format!(
+            "Não foi possível duplicar log {}: {error}",
+            log_path.display()
+        )
+    })?;
+
+    command
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log));
+
+    Ok(log_path)
 }
 
 #[tauri::command]
@@ -416,11 +463,14 @@ fn download_and_run_installer(
         .current_dir(&runner_command.working_dir)
         .envs(runner_command.envs.iter().map(|(key, value)| (key, value)));
 
+    let log_path = attach_process_logs(&app, &game_id, &mut command)?;
+
     command.spawn().map_err(|error| {
         format!(
-            "Não foi possível iniciar o instalador de {} usando {}: {error}",
+            "Não foi possível iniciar o instalador de {} usando {}: {error}. Log: {}",
             manifest.name,
-            runner_command.program.display()
+            runner_command.program.display(),
+            log_path.display()
         )
     })?;
 
@@ -497,11 +547,14 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         .current_dir(&runner_command.working_dir)
         .envs(runner_command.envs.iter().map(|(key, value)| (key, value)));
 
+    let log_path = attach_process_logs(&app, &game_id, &mut command)?;
+
     command.spawn().map_err(|error| {
         format!(
-            "Não foi possível iniciar {} usando {}: {error}",
+            "Não foi possível iniciar {} usando {}: {error}. Log: {}",
             manifest.name,
-            runner_command.program.display()
+            runner_command.program.display(),
+            log_path.display()
         )
     })?;
 

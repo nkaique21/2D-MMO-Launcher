@@ -355,6 +355,8 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - O backend expõe `download_and_run_installer`, que lê o método `windowsInstaller` do manifesto, baixa o arquivo para `downloads/<game_id>/` no diretório de dados do app e inicia o instalador via runner resolvido.
 - O frontend expõe `downloadAndRunInstaller(gameId)` e a ação `Baixar instalador Windows` agora baixa/inicia o instalador do RavenQuest usando a URL do manifesto.
 - O botão principal `Baixar e instalar` também chama `downloadAndRunInstaller` quando o jogo disponível possui método `windowsInstaller`, exibindo estado `Baixando...` durante a operação.
+- O nome do arquivo baixado preserva extensões como `.exe`, importante para Wine/Proton reconhecerem o instalador Windows corretamente.
+- Processos iniciados por `launch_game` e `download_and_run_installer` redirecionam stdout/stderr para `logs/<game_id>/runner.log` no diretório de dados do app, para facilitar diagnóstico de Wine/Proton.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -372,6 +374,7 @@ Próximo passo recomendado para desenvolvimento:
 
 3. **Camada de runners**
    - Validar o botão `Baixar instalador Windows` do RavenQuest em ambiente com Proton/UMU disponível.
+   - Se o instalador não abrir, consultar `logs/ravenquest/runner.log` no diretório de dados do app para analisar stdout/stderr do Wine/Proton.
    - Após o instalador terminar, definir estratégia para registrar/localizar automaticamente a pasta final instalada dentro do prefixo.
    - Testar execução via Wine quando houver jogo/instalador Windows simples e Wine disponível.
    - Validar RavenQuest com Proton usando o prefixo gerenciado criado em `compat-data/ravenquest/proton`.
