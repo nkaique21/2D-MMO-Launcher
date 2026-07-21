@@ -31,6 +31,17 @@ export type LaunchConfig = {
   runner: string;
   executable: string | null;
   args: string[];
+  battlEye?: BattlEyeConfig | null;
+};
+
+export type BattlEyeConfig = {
+  enabled?: boolean;
+  executable: string;
+  args?: string[];
+  pathBase?: string;
+  workingDir?: string;
+  workingDirBase?: string;
+  required?: boolean;
 };
 
 export type UpdateConfig = {

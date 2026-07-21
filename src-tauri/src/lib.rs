@@ -56,11 +56,32 @@ struct LaunchConfig {
     runner: String,
     executable: Option<String>,
     args: Vec<String>,
+    #[serde(rename = "battlEye")]
+    battl_eye: Option<BattlEyeConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BattlEyeConfig {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    executable: String,
+    #[serde(default)]
+    args: Vec<String>,
+    path_base: Option<String>,
+    working_dir: Option<String>,
+    working_dir_base: Option<String>,
+    #[serde(default = "default_true")]
+    required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UpdateConfig {
     strategy: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +264,40 @@ fn command_path_for_install(install_path: &Path, executable: &str) -> PathBuf {
     } else {
         install_path.join(executable_path)
     }
+}
+
+fn configured_base_path(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    install_path: &Path,
+    base: Option<&str>,
+    default_runner: &str,
+) -> Result<PathBuf, String> {
+    match base.unwrap_or("installPath") {
+        "installPath" => Ok(install_path.to_path_buf()),
+        "compatPrefix" => managed_windows_prefix_dir(app, game_id, default_runner),
+        runner_kind => managed_windows_prefix_dir(app, game_id, runner_kind),
+    }
+}
+
+fn configured_path_for_install(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    install_path: &Path,
+    path: &str,
+    base: Option<&str>,
+    default_runner: &str,
+) -> Result<PathBuf, String> {
+    let configured_path = PathBuf::from(path);
+
+    if configured_path.is_absolute() {
+        return Ok(configured_path);
+    }
+
+    Ok(
+        configured_base_path(app, game_id, install_path, base, default_runner)?
+            .join(configured_path),
+    )
 }
 
 fn is_windows_system_path(path: &Path) -> bool {
@@ -520,6 +575,116 @@ fn should_launch_after_install(manifest: &GameManifest) -> bool {
     })
 }
 
+fn spawn_battl_eye_if_configured(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    manifest: &GameManifest,
+    resolved_runner: &runners::ResolvedRunner,
+    install_path: &Path,
+) -> Result<(), String> {
+    let Some(battl_eye) = manifest.launch.battl_eye.as_ref() else {
+        return Ok(());
+    };
+
+    if !battl_eye.enabled {
+        append_runner_log(app, game_id, &["battl_eye_skipped=disabled".to_string()])?;
+        return Ok(());
+    }
+
+    let executable_path = configured_path_for_install(
+        app,
+        game_id,
+        install_path,
+        &battl_eye.executable,
+        battl_eye.path_base.as_deref(),
+        &resolved_runner.kind,
+    )?;
+    let working_dir = if let Some(working_dir) = battl_eye.working_dir.as_deref() {
+        configured_path_for_install(
+            app,
+            game_id,
+            install_path,
+            working_dir,
+            battl_eye.working_dir_base.as_deref(),
+            &resolved_runner.kind,
+        )?
+    } else {
+        executable_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| install_path.to_path_buf())
+    };
+
+    if !executable_path.exists() {
+        let message = format!(
+            "BattlEye configurado para {}, mas o executável não foi encontrado: {}",
+            manifest.name,
+            executable_path.display()
+        );
+
+        append_runner_log(app, game_id, &[format!("battl_eye_missing={message}")])?;
+
+        if battl_eye.required {
+            return Err(message);
+        }
+
+        return Ok(());
+    }
+
+    let battl_eye_command = build_runner_command(
+        app,
+        game_id,
+        resolved_runner,
+        &executable_path,
+        &working_dir,
+        &battl_eye.args,
+        None,
+    )?;
+    let mut command_log = vec!["battl_eye_start=true".to_string()];
+
+    command_log.extend(
+        format_runner_command_for_log(&battl_eye_command)
+            .into_iter()
+            .map(|line| format!("battl_eye.{line}")),
+    );
+    append_runner_log(app, game_id, &command_log)?;
+
+    let mut command = Command::new(&battl_eye_command.program);
+
+    command
+        .args(&battl_eye_command.args)
+        .current_dir(&battl_eye_command.working_dir)
+        .envs(
+            battl_eye_command
+                .envs
+                .iter()
+                .map(|(key, value)| (key, value)),
+        );
+
+    let log_path = attach_process_logs(app, game_id, &mut command)?;
+    let child = command.spawn().map_err(|error| {
+        format!(
+            "Não foi possível iniciar BattlEye para {} usando {}: {error}. Log: {}",
+            manifest.name,
+            battl_eye_command.program.display(),
+            log_path.display()
+        )
+    })?;
+    let process_id = child.id();
+
+    append_runner_log(
+        app,
+        game_id,
+        &[
+            "battl_eye_process_started=true".to_string(),
+            format!("battl_eye_process_pid={process_id}"),
+        ],
+    )?;
+    log_process_exit(app.clone(), game_id.to_string(), process_id, child);
+
+    Ok(())
+}
+
 fn launch_install(
     app: &tauri::AppHandle,
     game_id: &str,
@@ -592,6 +757,8 @@ fn launch_install(
 
     command_log.extend(host_environment_for_log());
     append_runner_log(app, game_id, &command_log)?;
+
+    spawn_battl_eye_if_configured(app, game_id, manifest, &resolved_runner, &install_path)?;
 
     let mut command = Command::new(&runner_command.program);
 
@@ -1327,6 +1494,9 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
     command_log.extend(host_environment_for_log());
 
     append_runner_log(&app, &game_id, &command_log)?;
+
+    spawn_battl_eye_if_configured(&app, &game_id, &manifest, &resolved_runner, &install_path)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
 
     let mut command = Command::new(&runner_command.program);
 
