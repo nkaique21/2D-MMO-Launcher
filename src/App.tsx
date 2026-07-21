@@ -305,7 +305,28 @@ function App() {
     setActionMessage(null);
 
     if (selectedGame.status !== 'installed') {
-      setActionMessage('Use “Localizar instalação existente” para registrar este jogo antes de jogar.');
+      const windowsInstallerMethod = selectedGame.installation.methods.find(
+        (method) => method.type === 'windowsInstaller',
+      );
+
+      if (!windowsInstallerMethod) {
+        setActionMessage('Use “Localizar instalação existente” para registrar este jogo antes de jogar.');
+        return;
+      }
+
+      setPendingActionId('primary-install');
+      setActionMessage('Baixando instalador e preparando runner...');
+
+      try {
+        const result = await downloadAndRunInstaller(selectedGame.id);
+
+        setActionMessage(`Instalador baixado e iniciado via ${result.runner}: ${result.command}`);
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPendingActionId(null);
+      }
+
       return;
     }
 
@@ -562,11 +583,17 @@ function App() {
                   <div className="mt-8 flex flex-wrap items-center gap-3">
                     <button
                       className="rounded-2xl bg-white px-8 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 shadow-[0_18px_60px_rgba(255,255,255,0.16)] transition hover:-translate-y-0.5 hover:bg-purple-100"
-                      disabled={isLaunching}
+                      disabled={isLaunching || pendingActionId === 'primary-install'}
                       onClick={() => void handlePrimaryAction()}
                       type="button"
                     >
-                      {isLaunching ? 'Iniciando...' : selectedGame.status === 'installed' ? 'Jogar' : 'Baixar e instalar'}
+                      {isLaunching
+                        ? 'Iniciando...'
+                        : pendingActionId === 'primary-install'
+                          ? 'Baixando...'
+                          : selectedGame.status === 'installed'
+                            ? 'Jogar'
+                            : 'Baixar e instalar'}
                     </button>
                     <button
                       className="rounded-2xl border border-white/[0.12] bg-white/[0.07] px-5 py-4 text-sm font-bold text-white/78 backdrop-blur-md transition hover:border-white/25 hover:bg-white/[0.12] hover:text-white"

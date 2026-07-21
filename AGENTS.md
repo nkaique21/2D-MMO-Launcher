@@ -354,6 +354,7 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - Foi adicionada dependência `reqwest` para downloads HTTP bloqueantes no backend Tauri.
 - O backend expõe `download_and_run_installer`, que lê o método `windowsInstaller` do manifesto, baixa o arquivo para `downloads/<game_id>/` no diretório de dados do app e inicia o instalador via runner resolvido.
 - O frontend expõe `downloadAndRunInstaller(gameId)` e a ação `Baixar instalador Windows` agora baixa/inicia o instalador do RavenQuest usando a URL do manifesto.
+- O botão principal `Baixar e instalar` também chama `downloadAndRunInstaller` quando o jogo disponível possui método `windowsInstaller`, exibindo estado `Baixando...` durante a operação.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
