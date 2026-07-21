@@ -7,7 +7,7 @@ use tauri::Manager;
 
 mod runners;
 
-use runners::{list_runners, resolve_runner};
+use runners::{build_runner_command, list_runners, resolve_runner};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -315,18 +315,6 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         .unwrap_or_else(|| manifest.launch.runner.clone());
     let resolved_runner = resolve_runner(&app, &requested_runner)?;
 
-    if resolved_runner.kind != "native" {
-        let runner_path = resolved_runner
-            .path
-            .as_deref()
-            .unwrap_or("caminho ainda não resolvido");
-
-        return Err(format!(
-            "Runner '{}' resolvido como '{}' ({runner_path}), mas execução via '{}' ainda não foi implementada. Próxima etapa: conectar Wine/Proton ao launcher.",
-            requested_runner, resolved_runner.label, resolved_runner.kind
-        ));
-    }
-
     let executable = manifest.launch.executable.as_ref().ok_or_else(|| {
         format!(
             "O manifesto de {} ainda não define launch.executable. Configure o executável antes de jogar.",
@@ -359,23 +347,30 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         ));
     }
 
-    Command::new(&command_path)
-        .args(&manifest.launch.args)
-        .current_dir(&install_path)
+    let runner_command = build_runner_command(
+        &resolved_runner,
+        &command_path,
+        &install_path,
+        &manifest.launch.args,
+    )?;
+
+    Command::new(&runner_command.program)
+        .args(&runner_command.args)
+        .current_dir(&runner_command.working_dir)
         .spawn()
         .map_err(|error| {
             format!(
                 "Não foi possível iniciar {} usando {}: {error}",
                 manifest.name,
-                command_path.display()
+                runner_command.program.display()
             )
         })?;
 
     Ok(LaunchResult {
         game_id,
-        runner: resolved_runner.kind,
-        command: command_path.to_string_lossy().to_string(),
-        working_dir: install_path.to_string_lossy().to_string(),
+        runner: runner_command.runner_kind,
+        command: runner_command.program.to_string_lossy().to_string(),
+        working_dir: runner_command.working_dir.to_string_lossy().to_string(),
     })
 }
 

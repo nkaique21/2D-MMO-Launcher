@@ -27,6 +27,14 @@ pub(crate) struct ResolvedRunner {
     pub(crate) path: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RunnerCommand {
+    pub(crate) runner_kind: String,
+    pub(crate) program: PathBuf,
+    pub(crate) args: Vec<String>,
+    pub(crate) working_dir: PathBuf,
+}
+
 fn path_is_executable(path: &Path) -> bool {
     if !path.is_file() {
         return false;
@@ -347,6 +355,52 @@ pub(crate) fn resolve_runner(
         "Nenhum runner compatível com '{}' foi encontrado. Verifique o manifesto ou configure um runner suportado.",
         normalized_runner
     ))
+}
+
+pub(crate) fn build_runner_command(
+    runner: &ResolvedRunner,
+    executable_path: &Path,
+    install_path: &Path,
+    launch_args: &[String],
+) -> Result<RunnerCommand, String> {
+    match runner.kind.as_str() {
+        "native" => Ok(RunnerCommand {
+            runner_kind: runner.kind.clone(),
+            program: executable_path.to_path_buf(),
+            args: launch_args.to_vec(),
+            working_dir: install_path.to_path_buf(),
+        }),
+        "wine" => {
+            let runner_path = runner.path.as_ref().ok_or_else(|| {
+                format!(
+                    "Runner Wine '{}' foi resolvido sem caminho executável.",
+                    runner.label
+                )
+            })?;
+            let mut args = vec![executable_path.to_string_lossy().to_string()];
+
+            args.extend_from_slice(launch_args);
+
+            Ok(RunnerCommand {
+                runner_kind: runner.kind.clone(),
+                program: PathBuf::from(runner_path),
+                args,
+                working_dir: install_path.to_path_buf(),
+            })
+        }
+        "proton" => {
+            let runner_path = runner.path.as_deref().unwrap_or("caminho não resolvido");
+
+            Err(format!(
+                "Runner Proton '{}' foi resolvido em '{}', mas a execução Proton ainda precisa de prefixo/STEAM_COMPAT_DATA_PATH gerenciado pelo launcher.",
+                runner.label, runner_path
+            ))
+        }
+        unsupported_runner => Err(format!(
+            "Runner '{}' foi resolvido, mas ainda não possui montagem de comando implementada.",
+            unsupported_runner
+        )),
+    }
 }
 
 #[tauri::command]
