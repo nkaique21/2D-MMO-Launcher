@@ -18,6 +18,7 @@
         "runner": "wine",
         "compatPrefix": "proton",
         "installPath": "drive_c/Program Files (x86)/Tavernlight Games/RavenQuest Launcher",
+        "launchAfterInstall": true,
         "url": "https://dw.ravenquest.io/ravenquest_installer.exe"
       }
     ]

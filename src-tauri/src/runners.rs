@@ -497,11 +497,8 @@ pub(crate) fn build_runner_command(
                     runner.label
                 )
             })?;
-            let prefix_dir = managed_windows_prefix_dir(
-                app,
-                game_id,
-                compat_prefix_kind.unwrap_or("wine"),
-            )?;
+            let prefix_dir =
+                managed_windows_prefix_dir(app, game_id, compat_prefix_kind.unwrap_or("wine"))?;
             let mut args = vec![executable_path.to_string_lossy().to_string()];
 
             args.extend_from_slice(launch_args);

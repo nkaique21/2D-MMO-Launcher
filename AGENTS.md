@@ -369,7 +369,11 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - O log de execução agora registra também ambiente gráfico herdado (`DISPLAY`, `XAUTHORITY`, `XDG_SESSION_TYPE`, `WAYLAND_DISPLAY`, `DESKTOP_SESSION`), PID iniciado e exit status/código quando o processo termina.
 - Troubleshooting do RavenQuest confirmou que o instalador Windows abre corretamente via Wine puro mesmo quando não abre via Proton. O manifesto agora permite `runner` opcional em métodos de instalação; `download_and_run_installer` usa `installation.methods[].runner` quando definido e só cai para `launch.runner` quando o método não especificar runner. RavenQuest continua com `launch.runner: "proton"` para execução, mas o método `windowsInstaller` declara `runner: "wine"` para abrir o instalador.
 - Ajuste posterior do RavenQuest: usar Wine puro para abrir o instalador, mas apontando `WINEPREFIX` para o prefixo compatível do Proton (`compatPrefix: "proton"`). Assim instalador e execução compartilham a mesma instalação em `compat-data/ravenquest/proton/pfx`. O manifesto declara `installPath` relativo ao prefixo Windows e `launch.executable: "launcher.exe"`; depois de iniciar o instalador, o backend registra automaticamente esse caminho esperado no SQLite e o frontend recarrega `listInstalls()`.
-- Em ambientes que já testaram o fluxo antigo, pode existir um registro local apontando para `compat-data/ravenquest/wine/...`. Para validar o fluxo novo, usar `Desvincular instalação` no launcher antes de rodar `Baixar e instalar` novamente, de modo que o instalador grave no prefixo Proton compartilhado.
+- O backend agora reconcilia automaticamente instalações registradas com o manifesto: se o caminho esperado não contiver o executável, ele procura `launch.executable` nos prefixos compatíveis (`compatPrefix`, runner do instalador, runner de launch, Proton/Wine) e atualiza o SQLite para a pasta real encontrada.
+- `download_and_run_installer` agora monitora o término do instalador em background; quando o processo encerra, reconcilia/localiza a instalação real, emite o evento Tauri `install-updated` e, se o método declarar `launchAfterInstall: true`, tenta iniciar o jogo automaticamente usando `launch.runner` do manifesto.
+- O frontend escuta o evento `install-updated` via `@tauri-apps/api/event`, atualiza a lista local de instalações e seleciona o jogo afetado sem depender de recarregamento manual.
+- O manifesto do RavenQuest declara `launchAfterInstall: true`, mantendo instalador via Wine quando necessário e execução via Proton/UMU conforme `launch.runner: "proton"`.
+- Em testes locais, uma instalação antiga do RavenQuest foi encontrada em `compat-data/ravenquest/wine/.../RavenQuest Launcher/launcher.exe`; o novo reconciliador atualiza o SQLite para esse caminho real em vez de exigir desvincular/reinstalar.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -388,7 +392,7 @@ Próximo passo recomendado para desenvolvimento:
 3. **Camada de runners**
    - Validar o botão `Baixar instalador Windows` do RavenQuest em ambiente com Proton/UMU disponível.
    - Se o instalador não abrir, consultar `logs/ravenquest/runner.log` no diretório de dados do app para analisar stdout/stderr do Wine/Proton.
-   - Após o instalador terminar, definir estratégia para registrar/localizar automaticamente a pasta final instalada dentro do prefixo.
+   - Validar o auto-launch pós-instalação do RavenQuest (`launchAfterInstall`) após uma instalação limpa e após uma instalação reconciliada de prefixo antigo.
    - Testar execução via Wine quando houver jogo/instalador Windows simples e Wine disponível.
    - Validar RavenQuest com Proton usando o prefixo gerenciado criado em `compat-data/ravenquest/proton`.
    - Persistir configurações avançadas de prefixo/runner no SQLite quando houver UI de configurações por jogo.

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import {
   listGames,
   listInstalls,
@@ -215,6 +216,26 @@ function App() {
       isMounted = false;
     };
   }, [reloadSignal]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const unlistenPromise = listen<GameInstall>('install-updated', (event) => {
+      if (!isMounted) return;
+
+      setInstalls((currentInstalls) => {
+        const otherInstalls = currentInstalls.filter((install) => install.gameId !== event.payload.gameId);
+
+        return [...otherInstalls, event.payload];
+      });
+      setSelectedGameId(event.payload.gameId);
+    });
+
+    return () => {
+      isMounted = false;
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
 
   const installedGameIds = useMemo(
     () => new Set(installs.map((install) => install.gameId)),

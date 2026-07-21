@@ -24,6 +24,7 @@ export type InstallMethod = {
   runner?: string;
   compatPrefix?: string;
   installPath?: string;
+  launchAfterInstall?: boolean;
 };
 
 export type LaunchConfig = {
