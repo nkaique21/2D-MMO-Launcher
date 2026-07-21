@@ -8,3 +8,7 @@ export function listGames() {
 export function listInstalls() {
   return invoke<GameInstall[]>('list_installs');
 }
+
+export function locateExistingInstall(gameId: string) {
+  return invoke<GameInstall | null>('locate_existing_install', { gameId });
+}

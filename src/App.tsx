@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { listGames, listInstalls } from './lib/tauri';
+import { listGames, listInstalls, locateExistingInstall } from './lib/tauri';
 import type { GameInstall, GameManifest } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
@@ -18,6 +18,13 @@ type GameViewModel = GameManifest &
     runnerLabel: string;
     status: InstallationStatus;
   };
+
+type SecondaryAction = {
+  id: string;
+  label: string;
+  installMethodType?: string;
+  type: 'installedAction' | 'installMethod' | 'manifestDetails' | 'runnerSettings';
+};
 
 const fallbackVisualMetadata: GameVisualMetadata = {
   shortName: '2D',
@@ -111,14 +118,27 @@ function toViewModel(game: GameManifest, installedGameIds: Set<string>): GameVie
   };
 }
 
-function getSecondaryActions(game: GameViewModel) {
+function getSecondaryActions(game: GameViewModel): SecondaryAction[] {
   if (game.status === 'installed') {
-    return ['Verificar arquivos', 'Abrir pasta', 'Configurar'];
+    return [
+      { id: 'verify-files', label: 'Verificar arquivos', type: 'installedAction' },
+      { id: 'open-folder', label: 'Abrir pasta', type: 'installedAction' },
+      { id: 'configure', label: 'Configurar', type: 'installedAction' },
+    ];
   }
 
-  const installActions = game.installation.methods.map((method) => method.label);
+  const installActions = game.installation.methods.map<SecondaryAction>((method) => ({
+    id: `install-method:${method.type}`,
+    installMethodType: method.type,
+    label: method.label,
+    type: 'installMethod',
+  }));
 
-  return [...installActions, 'Detalhes do manifesto', 'Configurar runner'];
+  return [
+    ...installActions,
+    { id: 'manifest-details', label: 'Detalhes do manifesto', type: 'manifestDetails' },
+    { id: 'runner-settings', label: 'Configurar runner', type: 'runnerSettings' },
+  ];
 }
 
 function App() {
@@ -127,6 +147,9 @@ function App() {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [reloadSignal, setReloadSignal] = useState(0);
 
   useEffect(() => {
@@ -243,6 +266,40 @@ function App() {
   }
 
   const secondaryActions = getSecondaryActions(selectedGame);
+
+  async function handleSecondaryAction(action: SecondaryAction) {
+    setActionError(null);
+    setActionMessage(null);
+
+    if (action.type === 'installMethod' && action.installMethodType === 'existing') {
+      setPendingActionId(action.id);
+
+      try {
+        const install = await locateExistingInstall(selectedGame.id);
+
+        if (!install) {
+          setActionMessage('Localização cancelada. Nenhuma instalação foi registrada.');
+          return;
+        }
+
+        setInstalls((currentInstalls) => {
+          const otherInstalls = currentInstalls.filter((currentInstall) => currentInstall.gameId !== install.gameId);
+
+          return [...otherInstalls, install];
+        });
+        setSelectedGameId(install.gameId);
+        setActionMessage(`Instalação registrada em: ${install.installPath}`);
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPendingActionId(null);
+      }
+
+      return;
+    }
+
+    setActionMessage('Ação preparada para a próxima etapa do MVP.');
+  }
 
   return (
     <main className="min-h-screen overflow-hidden bg-launcher-bg text-launcher-text">
@@ -441,14 +498,27 @@ function App() {
                 {secondaryActions.map((action) => (
                   <button
                     className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-sm font-semibold text-launcher-muted transition hover:bg-white/[0.065] hover:text-white"
-                    key={action}
+                    disabled={pendingActionId === action.id}
+                    key={action.id}
+                    onClick={() => void handleSecondaryAction(action)}
                     type="button"
                   >
-                    {action}
+                    {pendingActionId === action.id ? 'Aguardando seleção...' : action.label}
                     <span className="text-white/25">›</span>
                   </button>
                 ))}
               </section>
+
+              {(actionMessage || actionError) && (
+                <section className={`rounded-[1.75rem] border p-4 text-sm leading-6 ${
+                  actionError
+                    ? 'border-red-300/20 bg-red-500/[0.08] text-red-100'
+                    : 'border-emerald-300/20 bg-emerald-500/[0.08] text-emerald-100'
+                }`}
+                >
+                  {actionError ?? actionMessage}
+                </section>
+              )}
 
               <section className="rounded-[1.75rem] border border-purple-300/15 bg-purple-500/[0.065] p-5">
                 <p className="text-xs font-black uppercase tracking-[0.2em] text-purple-200">

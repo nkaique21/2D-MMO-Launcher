@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -104,6 +104,28 @@ fn open_database(app: &tauri::AppHandle) -> Result<Connection, String> {
     Ok(connection)
 }
 
+fn get_install(connection: &Connection, game_id: &str) -> Result<GameInstall, String> {
+    connection
+        .query_row(
+            "
+            SELECT game_id, install_path, runner_override, created_at, updated_at
+            FROM installs
+            WHERE game_id = ?1
+            ",
+            params![game_id],
+            |row| {
+                Ok(GameInstall {
+                    game_id: row.get(0)?,
+                    install_path: row.get(1)?,
+                    runner_override: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        )
+        .map_err(|error| format!("Não foi possível carregar a instalação de {game_id}: {error}"))
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Olá, {name}! O backend Tauri está pronto.")
@@ -166,10 +188,52 @@ fn list_installs(app: tauri::AppHandle) -> Result<Vec<GameInstall>, String> {
     Ok(installs)
 }
 
+#[tauri::command]
+fn locate_existing_install(
+    app: tauri::AppHandle,
+    game_id: String,
+) -> Result<Option<GameInstall>, String> {
+    let game_id = game_id.trim().to_string();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Localizar instalação existente")
+        .pick_folder()
+    else {
+        return Ok(None);
+    };
+
+    let install_path = path.to_string_lossy().to_string();
+    let connection = open_database(&app)?;
+
+    connection
+        .execute(
+            "
+            INSERT INTO installs (game_id, install_path, runner_override)
+            VALUES (?1, ?2, NULL)
+            ON CONFLICT(game_id) DO UPDATE SET
+                install_path = excluded.install_path,
+                updated_at = CURRENT_TIMESTAMP
+            ",
+            params![game_id, install_path],
+        )
+        .map_err(|error| format!("Não foi possível salvar a instalação localizada: {error}"))?;
+
+    Ok(Some(get_install(&connection, &game_id)?))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, list_games, list_installs])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            list_games,
+            list_installs,
+            locate_existing_install
+        ])
         .run(tauri::generate_context!())
         .expect("erro ao executar o 2D MMO Launcher");
 }
