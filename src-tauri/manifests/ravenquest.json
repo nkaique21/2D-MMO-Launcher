@@ -15,6 +15,7 @@
       {
         "type": "windowsInstaller",
         "label": "Baixar instalador Windows",
+        "runner": "wine",
         "url": "https://dw.ravenquest.io/ravenquest_installer.exe"
       }
     ]

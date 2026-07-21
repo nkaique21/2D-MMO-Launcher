@@ -13,6 +13,8 @@ Este arquivo serve como contexto permanente para qualquer IA, agente de código 
   - criar um script temporário simples;
   - dividir em comandos menores.
 - Não assumir que comandos copiados de bash funcionarão diretamente no fish.
+- Evitar comandos grandes via `execute_command`, especialmente `python - <<'PY'`, heredocs longos ou scripts inline complexos. Eles tendem a falhar/interagir mal no fish e dificultam troubleshooting.
+- Para inspeções Git, preferir comandos curtos e diretos como `git status --short`, `git diff --name-status`, `git diff --stat` e leituras pontuais de arquivos.
 
 ## Projeto
 
@@ -357,6 +359,15 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - O botão principal `Baixar e instalar` também chama `downloadAndRunInstaller` quando o jogo disponível possui método `windowsInstaller`, exibindo estado `Baixando...` durante a operação.
 - O nome do arquivo baixado preserva extensões como `.exe`, importante para Wine/Proton reconhecerem o instalador Windows corretamente.
 - Processos iniciados por `launch_game` e `download_and_run_installer` redirecionam stdout/stderr para `logs/<game_id>/runner.log` no diretório de dados do app, para facilitar diagnóstico de Wine/Proton.
+- `LaunchResult` agora inclui `logPath`, e o frontend mostra esse caminho nas mensagens de sucesso de jogo/instalador iniciado.
+- No Linux, com identifier `dev.kaiquelb.2d-mmo-launcher`, o diretório de dados tende a ficar em `~/.local/share/dev.kaiquelb.2d-mmo-launcher`; os logs do RavenQuest ficam em `logs/ravenquest/runner.log` dentro desse diretório.
+- Diagnóstico importante: se `launch_game` abortar antes do `Command::spawn` (por exemplo, RavenQuest/Archlight ainda com `launch.executable: null`) ou se `download_and_run_installer` falhar antes de montar o processo, o Proton não será executado.
+- Para facilitar troubleshooting, `launch_game` e `download_and_run_installer` agora criam/escrevem `runner.log` desde o início da tentativa, registrando ação, runner resolvido, comando final, variáveis de ambiente e erros pré-spawn quando existirem.
+- Validação real do RavenQuest mostrou que o Proton era executado e criava prefixo, mas o instalador não abria janela; o arquivo baixado era um Nullsoft Installer Windows válido de 134 MB e a sessão estava em X11.
+- Para Proton fora da Steam, o runner agora prefere `umu-run` quando disponível. Sem UMU, Proton direto usa `waitforexitandrun` e caminho Windows `z:\...` em vez de `proton run /home/...`.
+- O runner Proton agora define IDs sintéticos (`STEAM_COMPAT_APP_ID`, `SteamAppId`, `SteamGameId`), ativa `PROTON_LOG=1`, direciona `PROTON_LOG_DIR` para `logs/<game_id>` e mantém `STEAM_COMPAT_DATA_PATH` no prefixo gerenciado.
+- O log de execução agora registra também ambiente gráfico herdado (`DISPLAY`, `XAUTHORITY`, `XDG_SESSION_TYPE`, `WAYLAND_DISPLAY`, `DESKTOP_SESSION`), PID iniciado e exit status/código quando o processo termina.
+- Troubleshooting do RavenQuest confirmou que o instalador Windows abre corretamente via Wine puro mesmo quando não abre via Proton. O manifesto agora permite `runner` opcional em métodos de instalação; `download_and_run_installer` usa `installation.methods[].runner` quando definido e só cai para `launch.runner` quando o método não especificar runner. RavenQuest continua com `launch.runner: "proton"` para execução, mas o método `windowsInstaller` declara `runner: "wine"` para abrir o instalador.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -380,6 +391,7 @@ Próximo passo recomendado para desenvolvimento:
    - Validar RavenQuest com Proton usando o prefixo gerenciado criado em `compat-data/ravenquest/proton`.
    - Persistir configurações avançadas de prefixo/runner no SQLite quando houver UI de configurações por jogo.
    - Ajustar variáveis de ambiente adicionais de Proton/UMU conforme necessário após teste real.
+   - Instalar/testar `umu-run` (`umu-launcher` no Arch/AUR conforme disponibilidade) para validar RavenQuest com ambiente Proton mais adequado fora da Steam.
    - Criar fluxo para instalar/registrar runners gerenciados pelo launcher quando Wine/Proton não existirem no sistema.
    - Implementar suporte progressivo a Wine/Proton para RavenQuest e Archlight.
    - Usar o instalador Windows do RavenQuest como base de teste para Proton/Wine.

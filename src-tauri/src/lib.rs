@@ -1,9 +1,11 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 mod runners;
@@ -39,6 +41,7 @@ struct InstallMethod {
     kind: String,
     label: String,
     url: Option<String>,
+    runner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +73,7 @@ struct LaunchResult {
     runner: String,
     command: String,
     working_dir: String,
+    log_path: Option<String>,
 }
 
 fn manifests_dir() -> Result<PathBuf, String> {
@@ -254,12 +258,110 @@ fn logs_dir(app: &tauri::AppHandle, game_id: &str) -> Result<PathBuf, String> {
     Ok(logs_dir)
 }
 
+fn runner_log_path(app: &tauri::AppHandle, game_id: &str) -> Result<PathBuf, String> {
+    Ok(logs_dir(app, game_id)?.join("runner.log"))
+}
+
+fn append_runner_log(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    lines: &[String],
+) -> Result<PathBuf, String> {
+    let log_path = runner_log_path(app, game_id)?;
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| format!("Não foi possível abrir log {}: {error}", log_path.display()))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "unknown-time".to_string());
+
+    writeln!(log, "\n=== launcher attempt {timestamp} ===").map_err(|error| {
+        format!(
+            "Não foi possível escrever log {}: {error}",
+            log_path.display()
+        )
+    })?;
+
+    for line in lines {
+        writeln!(log, "{line}").map_err(|error| {
+            format!(
+                "Não foi possível escrever log {}: {error}",
+                log_path.display()
+            )
+        })?;
+    }
+
+    Ok(log_path)
+}
+
+fn log_error_message(app: &tauri::AppHandle, game_id: &str, message: String) -> String {
+    match append_runner_log(app, game_id, &[format!("error={message}")]) {
+        Ok(log_path) => format!("{message} Log: {}", log_path.display()),
+        Err(log_error) => {
+            format!("{message} Também não foi possível escrever o runner.log: {log_error}")
+        }
+    }
+}
+
+fn format_runner_command_for_log(command: &runners::RunnerCommand) -> Vec<String> {
+    let mut lines = vec![
+        format!("runner_kind={}", command.runner_kind),
+        format!("program={}", command.program.display()),
+        format!("working_dir={}", command.working_dir.display()),
+        format!("args={:?}", command.args),
+    ];
+
+    for (key, value) in &command.envs {
+        lines.push(format!("env.{key}={value}"));
+    }
+
+    lines
+}
+
+fn host_environment_for_log() -> Vec<String> {
+    [
+        "DISPLAY",
+        "XAUTHORITY",
+        "XDG_SESSION_TYPE",
+        "WAYLAND_DISPLAY",
+        "DESKTOP_SESSION",
+    ]
+    .into_iter()
+    .map(|key| {
+        let value = std::env::var(key).unwrap_or_else(|_| "<unset>".to_string());
+
+        format!("host_env.{key}={value}")
+    })
+    .collect()
+}
+
+fn log_process_exit(app: tauri::AppHandle, game_id: String, pid: u32, mut child: Child) {
+    thread::spawn(move || {
+        let lines = match child.wait() {
+            Ok(status) => vec![
+                format!("process_pid={pid}"),
+                format!("process_exit_status={status}"),
+                format!("process_exit_code={:?}", status.code()),
+            ],
+            Err(error) => vec![
+                format!("process_pid={pid}"),
+                format!("process_wait_error={error}"),
+            ],
+        };
+
+        let _ = append_runner_log(&app, &game_id, &lines);
+    });
+}
+
 fn attach_process_logs(
     app: &tauri::AppHandle,
     game_id: &str,
     command: &mut Command,
 ) -> Result<PathBuf, String> {
-    let log_path = logs_dir(app, game_id)?.join("runner.log");
+    let log_path = runner_log_path(app, game_id)?;
     let stdout_log = OpenOptions::new()
         .create(true)
         .append(true)
@@ -419,22 +521,40 @@ fn download_and_run_installer(
         return Err("ID do jogo não pode ser vazio.".to_string());
     }
 
-    let manifest = get_manifest(&game_id)?;
+    let attempt_log_path = append_runner_log(
+        &app,
+        &game_id,
+        &[
+            "action=download_and_run_installer".to_string(),
+            format!("game_id={game_id}"),
+        ],
+    )?;
+
+    let manifest =
+        get_manifest(&game_id).map_err(|error| log_error_message(&app, &game_id, error))?;
     let installer = manifest
         .installation
         .methods
         .iter()
         .find(|method| method.kind == "windowsInstaller")
         .ok_or_else(|| {
-            format!(
-                "{} não possui método windowsInstaller no manifesto.",
-                manifest.name
+            log_error_message(
+                &app,
+                &game_id,
+                format!(
+                    "{} não possui método windowsInstaller no manifesto.",
+                    manifest.name
+                ),
             )
         })?;
     let installer_url = installer.url.as_ref().ok_or_else(|| {
-        format!(
-            "O método windowsInstaller de {} não define uma URL de download.",
-            manifest.name
+        log_error_message(
+            &app,
+            &game_id,
+            format!(
+                "O método windowsInstaller de {} não define uma URL de download.",
+                manifest.name
+            ),
         )
     })?;
     let downloads_dir = app
@@ -445,9 +565,50 @@ fn download_and_run_installer(
         .join(sanitize_path_segment(&game_id));
     let installer_path = downloads_dir.join(filename_from_url(installer_url));
 
-    download_file(installer_url, &installer_path)?;
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            format!("manifest={}", manifest.name),
+            format!("launch_runner={}", manifest.launch.runner),
+            format!("installer_url={installer_url}"),
+            format!("installer_path={}", installer_path.display()),
+            format!("log_path={}", attempt_log_path.display()),
+        ],
+    )?;
 
-    let resolved_runner = resolve_runner(&app, &manifest.launch.runner)?;
+    download_file(installer_url, &installer_path)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
+
+    let installer_runner = installer
+        .runner
+        .as_deref()
+        .unwrap_or(&manifest.launch.runner);
+
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            format!("installer_runner={installer_runner}"),
+            format!("requested_runner={installer_runner}"),
+        ],
+    )?;
+
+    let resolved_runner = resolve_runner(&app, installer_runner)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
+
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            format!("resolved_runner_id={}", resolved_runner.id),
+            format!("resolved_runner_kind={}", resolved_runner.kind),
+            format!("resolved_runner_label={}", resolved_runner.label),
+            format!("resolved_runner_source={}", resolved_runner.source),
+            format!("resolved_runner_path={:?}", resolved_runner.path),
+        ],
+    )?;
+
     let runner_command = build_runner_command(
         &app,
         &game_id,
@@ -455,7 +616,14 @@ fn download_and_run_installer(
         &installer_path,
         &downloads_dir,
         &[],
-    )?;
+    )
+    .map_err(|error| log_error_message(&app, &game_id, error))?;
+
+    let mut command_log = format_runner_command_for_log(&runner_command);
+    command_log.extend(host_environment_for_log());
+
+    append_runner_log(&app, &game_id, &command_log)?;
+
     let mut command = Command::new(&runner_command.program);
 
     command
@@ -465,20 +633,36 @@ fn download_and_run_installer(
 
     let log_path = attach_process_logs(&app, &game_id, &mut command)?;
 
-    command.spawn().map_err(|error| {
-        format!(
-            "Não foi possível iniciar o instalador de {} usando {}: {error}. Log: {}",
-            manifest.name,
-            runner_command.program.display(),
-            log_path.display()
+    let child = command.spawn().map_err(|error| {
+        log_error_message(
+            &app,
+            &game_id,
+            format!(
+                "Não foi possível iniciar o instalador de {} usando {}: {error}. Log: {}",
+                manifest.name,
+                runner_command.program.display(),
+                log_path.display()
+            ),
         )
     })?;
+    let process_id = child.id();
+
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            "process_started=true".to_string(),
+            format!("process_pid={process_id}"),
+        ],
+    )?;
+    log_process_exit(app.clone(), game_id.clone(), process_id, child);
 
     Ok(LaunchResult {
         game_id,
         runner: runner_command.runner_kind,
         command: runner_command.program.to_string_lossy().to_string(),
         working_dir: runner_command.working_dir.to_string_lossy().to_string(),
+        log_path: Some(log_path.to_string_lossy().to_string()),
     })
 }
 
@@ -490,29 +674,66 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         return Err("ID do jogo não pode ser vazio.".to_string());
     }
 
-    let connection = open_database(&app)?;
-    let install = get_install(&connection, &game_id)?;
-    let manifest = get_manifest(&game_id)?;
+    let attempt_log_path = append_runner_log(
+        &app,
+        &game_id,
+        &[
+            "action=launch_game".to_string(),
+            format!("game_id={game_id}"),
+        ],
+    )?;
+
+    let connection =
+        open_database(&app).map_err(|error| log_error_message(&app, &game_id, error))?;
+    let install = get_install(&connection, &game_id)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
+    let manifest =
+        get_manifest(&game_id).map_err(|error| log_error_message(&app, &game_id, error))?;
     let requested_runner = install
         .runner_override
         .clone()
         .unwrap_or_else(|| manifest.launch.runner.clone());
-    let resolved_runner = resolve_runner(&app, &requested_runner)?;
+    let resolved_runner = resolve_runner(&app, &requested_runner)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
+
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            format!("manifest={}", manifest.name),
+            format!("install_path={}", install.install_path),
+            format!("requested_runner={requested_runner}"),
+            format!("resolved_runner_id={}", resolved_runner.id),
+            format!("resolved_runner_kind={}", resolved_runner.kind),
+            format!("resolved_runner_label={}", resolved_runner.label),
+            format!("resolved_runner_source={}", resolved_runner.source),
+            format!("resolved_runner_path={:?}", resolved_runner.path),
+            format!("log_path={}", attempt_log_path.display()),
+        ],
+    )?;
 
     let executable = manifest.launch.executable.as_ref().ok_or_else(|| {
-        format!(
-            "O manifesto de {} ainda não define launch.executable. Configure o executável antes de jogar.",
-            manifest.name
+        log_error_message(
+            &app,
+            &game_id,
+            format!(
+                "O manifesto de {} ainda não define launch.executable. Configure o executável antes de jogar.",
+                manifest.name
+            ),
         )
     })?;
 
     let install_path = PathBuf::from(&install.install_path);
 
     if !install_path.exists() {
-        return Err(format!(
-            "A pasta registrada para {} não existe mais: {}",
-            manifest.name,
-            install_path.display()
+        return Err(log_error_message(
+            &app,
+            &game_id,
+            format!(
+                "A pasta registrada para {} não existe mais: {}",
+                manifest.name,
+                install_path.display()
+            ),
         ));
     }
 
@@ -524,10 +745,14 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
     };
 
     if !command_path.exists() {
-        return Err(format!(
-            "Executável não encontrado para {}: {}",
-            manifest.name,
-            command_path.display()
+        return Err(log_error_message(
+            &app,
+            &game_id,
+            format!(
+                "Executável não encontrado para {}: {}",
+                manifest.name,
+                command_path.display()
+            ),
         ));
     }
 
@@ -538,7 +763,13 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         &command_path,
         &install_path,
         &manifest.launch.args,
-    )?;
+    )
+    .map_err(|error| log_error_message(&app, &game_id, error))?;
+
+    let mut command_log = format_runner_command_for_log(&runner_command);
+    command_log.extend(host_environment_for_log());
+
+    append_runner_log(&app, &game_id, &command_log)?;
 
     let mut command = Command::new(&runner_command.program);
 
@@ -549,20 +780,36 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
 
     let log_path = attach_process_logs(&app, &game_id, &mut command)?;
 
-    command.spawn().map_err(|error| {
-        format!(
-            "Não foi possível iniciar {} usando {}: {error}. Log: {}",
-            manifest.name,
-            runner_command.program.display(),
-            log_path.display()
+    let child = command.spawn().map_err(|error| {
+        log_error_message(
+            &app,
+            &game_id,
+            format!(
+                "Não foi possível iniciar {} usando {}: {error}. Log: {}",
+                manifest.name,
+                runner_command.program.display(),
+                log_path.display()
+            ),
         )
     })?;
+    let process_id = child.id();
+
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            "process_started=true".to_string(),
+            format!("process_pid={process_id}"),
+        ],
+    )?;
+    log_process_exit(app.clone(), game_id.clone(), process_id, child);
 
     Ok(LaunchResult {
         game_id,
         runner: runner_command.runner_kind,
         command: runner_command.program.to_string_lossy().to_string(),
         working_dir: runner_command.working_dir.to_string_lossy().to_string(),
+        log_path: Some(log_path.to_string_lossy().to_string()),
     })
 }
 

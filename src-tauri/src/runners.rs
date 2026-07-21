@@ -22,8 +22,10 @@ pub(crate) struct RunnerInfo {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRunner {
+    pub(crate) id: String,
     pub(crate) kind: String,
     pub(crate) label: String,
+    pub(crate) source: String,
     pub(crate) path: Option<String>,
 }
 
@@ -64,6 +66,27 @@ fn find_in_path(binary: &str) -> Option<PathBuf> {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+fn path_to_proton_windows_path(path: &Path) -> String {
+    let normalized_path = path.to_string_lossy().replace('/', "\\");
+
+    if normalized_path.starts_with('\\') {
+        format!("z:{normalized_path}")
+    } else {
+        normalized_path
+    }
+}
+
+fn synthetic_steam_app_id(game_id: &str) -> String {
+    let mut hash = 2_166_136_261_u32;
+
+    for byte in game_id.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+
+    (2_000_000_000_u32 + (hash % 1_000_000_000)).to_string()
 }
 
 fn sanitize_path_segment(value: &str) -> String {
@@ -144,6 +167,24 @@ fn managed_prefix_dir(
     })?;
 
     Ok(prefix_dir)
+}
+
+fn managed_logs_dir(app: &tauri::AppHandle, game_id: &str) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        format!("Não foi possível resolver o diretório de dados do app: {error}")
+    })?;
+    let logs_dir = app_data_dir
+        .join("logs")
+        .join(sanitize_path_segment(game_id));
+
+    fs::create_dir_all(&logs_dir).map_err(|error| {
+        format!(
+            "Não foi possível criar o diretório de logs {}: {error}",
+            logs_dir.display()
+        )
+    })?;
+
+    Ok(logs_dir)
 }
 
 fn discover_steam_proton_runners() -> Vec<RunnerInfo> {
@@ -368,13 +409,30 @@ pub(crate) fn resolve_runner(
 
     let runners = discover_runners(app)?;
 
+    if normalized_runner == "proton" {
+        if let Some(runner) = runners
+            .iter()
+            .find(|runner| runner.id == "system-umu-run" && runner.status == "available")
+        {
+            return Ok(ResolvedRunner {
+                id: runner.id.clone(),
+                kind: runner.kind.clone(),
+                label: runner.label.clone(),
+                source: runner.source.clone(),
+                path: runner.path.clone(),
+            });
+        }
+    }
+
     if let Some(runner) = runners
         .iter()
         .find(|runner| runner.kind == normalized_runner && runner.status == "available")
     {
         return Ok(ResolvedRunner {
+            id: runner.id.clone(),
             kind: runner.kind.clone(),
             label: runner.label.clone(),
+            source: runner.source.clone(),
             path: runner.path.clone(),
         });
     }
@@ -444,14 +502,40 @@ pub(crate) fn build_runner_command(
                 )
             })?;
             let prefix_dir = managed_prefix_dir(app, game_id, "proton")?;
-            let mut args = vec![
-                "run".to_string(),
-                executable_path.to_string_lossy().to_string(),
+            let logs_dir = managed_logs_dir(app, game_id)?;
+            let steam_app_id = synthetic_steam_app_id(game_id);
+            let executable_arg = if runner.id == "system-umu-run" {
+                executable_path.to_string_lossy().to_string()
+            } else {
+                path_to_proton_windows_path(executable_path)
+            };
+            let mut args = if runner.id == "system-umu-run" {
+                vec![executable_arg]
+            } else {
+                vec!["waitforexitandrun".to_string(), executable_arg]
+            };
+            let mut envs = vec![
+                (
+                    "STEAM_COMPAT_DATA_PATH".to_string(),
+                    path_to_string(&prefix_dir),
+                ),
+                ("STEAM_COMPAT_APP_ID".to_string(), steam_app_id.clone()),
+                ("SteamAppId".to_string(), steam_app_id.clone()),
+                ("SteamGameId".to_string(), steam_app_id.clone()),
+                ("PROTON_LOG".to_string(), "1".to_string()),
+                ("PROTON_LOG_DIR".to_string(), path_to_string(&logs_dir)),
             ];
-            let mut envs = vec![(
-                "STEAM_COMPAT_DATA_PATH".to_string(),
-                path_to_string(&prefix_dir),
-            )];
+
+            if runner.id == "system-umu-run" {
+                envs.extend([
+                    ("GAMEID".to_string(), sanitize_path_segment(game_id)),
+                    ("STORE".to_string(), "none".to_string()),
+                    (
+                        "WINEPREFIX".to_string(),
+                        path_to_string(&prefix_dir.join("pfx")),
+                    ),
+                ]);
+            }
 
             args.extend_from_slice(launch_args);
 

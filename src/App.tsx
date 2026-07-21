@@ -120,6 +120,12 @@ function formatRunnerStatus(status: string) {
   return status || 'Indefinido';
 }
 
+function formatLaunchMessage(prefix: string, result: { runner: string; command: string; logPath: string | null }) {
+  const logMessage = result.logPath ? ` Log: ${result.logPath}` : '';
+
+  return `${prefix} via ${result.runner}: ${result.command}.${logMessage}`;
+}
+
 function toViewModel(game: GameManifest, installedGameIds: Set<string>): GameViewModel {
   const status: InstallationStatus = installedGameIds.has(game.id) ? 'installed' : 'available';
   const runner = game.launch.runner.toLowerCase();
@@ -320,7 +326,7 @@ function App() {
       try {
         const result = await downloadAndRunInstaller(selectedGame.id);
 
-        setActionMessage(`Instalador baixado e iniciado via ${result.runner}: ${result.command}`);
+        setActionMessage(formatLaunchMessage('Instalador baixado e iniciado', result));
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       } finally {
@@ -334,7 +340,7 @@ function App() {
 
     try {
       const result = await launchGame(selectedGame.id);
-      setActionMessage(`Jogo iniciado via ${result.runner}: ${result.command}`);
+      setActionMessage(formatLaunchMessage('Jogo iniciado', result));
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -379,7 +385,7 @@ function App() {
       try {
         const result = await downloadAndRunInstaller(selectedGame.id);
 
-        setActionMessage(`Instalador baixado e iniciado via ${result.runner}: ${result.command}`);
+        setActionMessage(formatLaunchMessage('Instalador baixado e iniciado', result));
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       } finally {

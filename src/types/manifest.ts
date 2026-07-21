@@ -21,6 +21,7 @@ export type InstallMethod = {
   type: string;
   label: string;
   url?: string;
+  runner?: string;
 };
 
 export type LaunchConfig = {
@@ -46,6 +47,7 @@ export type LaunchResult = {
   runner: string;
   command: string;
   workingDir: string;
+  logPath: string | null;
 };
 
 export type RunnerInfo = {
