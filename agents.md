@@ -35,11 +35,14 @@ Contexto atual: o launcher Tauri já consegue abrir o jogo corretamente. O próx
 
 - O manifesto agora aceita `launch.battlEye` opcional. Sem esse bloco, os jogos continuam usando o fluxo antigo.
 - O RavenQuest declara BattlEye apontando para `drive_c/windows/system32/belauncher.exe`, com `workingDir` na pasta `RavenQuest/BattlEye`, ambos resolvidos a partir do prefixo Proton (`compatPrefix`).
-- `launch_game` e o auto-launch pós-instalação iniciam o BattlEye antes do processo principal quando o manifesto exigir.
+- `launch_game` e o auto-launch pós-instalação suportam dois modos de BattlEye:
+  - modo padrão/anterior: iniciar BattlEye antes do processo principal;
+  - `launch.battlEye.launchMode: "main"`: iniciar o BattlEye como processo principal, sem abrir `launch.executable` em paralelo.
 - O backend registra no `runner.log` o comando, PID e erros do BattlEye para facilitar diagnóstico.
 - Validações executadas: `npm run build` e `cargo check --manifest-path src-tauri/Cargo.toml` passaram.
+- Diagnóstico do erro real “BattlEye service is not running”: o `BELauncher.ini` do RavenQuest declara `64BitExe=ravenquest_dx.exe`, então o fluxo mais provável é iniciar `belauncher.exe` como entrada principal. Não deve exigir reinstalação de início; primeiro testar com o launcher recompilado/reiniciado.
 
 ### Próximos passos de teste real
 
-- Rodar o RavenQuest pelo launcher e conferir `logs/ravenquest/runner.log` para confirmar `battl_eye_process_started=true`.
-- Se o BattlEye abrir mas o jogo ainda reclamar anti-cheat, testar se o fluxo correto deve iniciar apenas `belauncher.exe` ou se também precisa ajustar o executável principal para `ravenquest_dx.exe`.
+- Rodar o RavenQuest pelo launcher recompilado/reiniciado e conferir `logs/ravenquest/runner.log` para confirmar `main_executable_replaced_by_battl_eye=true` e `battl_eye_launch_mode=main`.
+- Se ainda reclamar anti-cheat, testar uma reinstalação limpa no prefixo Proton e/ou ajustar o manifesto para usar diretamente `ravenquest_dx.exe` apenas como executável de validação/localização.

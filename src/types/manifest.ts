@@ -38,6 +38,7 @@ export type BattlEyeConfig = {
   enabled?: boolean;
   executable: string;
   args?: string[];
+  launchMode?: "beforeMain" | "main" | "replaceMain" | string;
   pathBase?: string;
   workingDir?: string;
   workingDirBase?: string;

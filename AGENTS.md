@@ -379,6 +379,10 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - O RavenQuest declara `launch.battlEye` apontando para `drive_c/windows/system32/belauncher.exe`, com `workingDir` em `drive_c/Program Files (x86)/Tavernlight Games/RavenQuest/BattlEye`, ambos resolvidos a partir do prefixo Proton.
 - O `runner.log` registra `battl_eye_start`, comando/ambiente do processo auxiliar, `battl_eye_process_started=true`, PID e erros de ausência/spawn quando houver.
 - `npm run build` e `cargo check --manifest-path src-tauri/Cargo.toml` passaram após a integração do BattlEye.
+- Após teste real, o RavenQuest continuou exibindo “BattlEye service is not running”. O diagnóstico mostrou que não é necessário reinstalar de imediato: há arquivos do BattlEye e `ravenquest_dx.exe` no prefixo Proton, e o `BELauncher.ini` declara `64BitExe=ravenquest_dx.exe`.
+- Foi adicionado `launch.battlEye.launchMode`, permitindo configurar se o BattlEye roda antes do executável principal ou se substitui o processo principal. Valores aceitos pelo backend para substituição: `main`, `replaceMain`, `replace-main`, `replace_main`.
+- O manifesto do RavenQuest agora usa `launch.battlEye.launchMode: "main"`, então `launch_game` e o auto-launch pós-instalação iniciam `belauncher.exe` como entrada principal e pulam o spawn separado de `launcher.exe`. O log passa a registrar `main_executable_replaced_by_battl_eye=true`, `battl_eye_launch_mode=main` e `battl_eye_separate_spawn_skipped=main_launch_mode`.
+- Validações executadas após esse ajuste: `cargo check --manifest-path src-tauri/Cargo.toml` e `npm run build` passaram.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -399,7 +403,7 @@ Próximo passo recomendado para desenvolvimento:
    - Se o instalador não abrir, consultar `logs/ravenquest/runner.log` no diretório de dados do app para analisar stdout/stderr do Wine/Proton.
    - Validar o auto-launch pós-instalação do RavenQuest (`launchAfterInstall`) após uma instalação limpa e após uma instalação reconciliada de prefixo antigo.
    - Validar o RavenQuest em execução real com BattlEye e conferir no `runner.log` se aparecem `battl_eye_process_started=true` e o PID do processo auxiliar.
-   - Se o jogo ainda reclamar anti-cheat, testar se o fluxo correto deve iniciar somente `belauncher.exe` ou ajustar o executável principal para `ravenquest_dx.exe` conforme `BELauncher.ini`.
+   - Se o jogo ainda reclamar anti-cheat, conferir primeiro se o log registra `main_executable_replaced_by_battl_eye=true` e `battl_eye_launch_mode=main`. Depois testar reinstalação limpa no prefixo Proton e/ou ajustar o executável de validação para `ravenquest_dx.exe` conforme `BELauncher.ini`.
    - Testar execução via Wine quando houver jogo/instalador Windows simples e Wine disponível.
    - Validar RavenQuest com Proton usando o prefixo gerenciado criado em `compat-data/ravenquest/proton`.
    - Persistir configurações avançadas de prefixo/runner no SQLite quando houver UI de configurações por jogo.

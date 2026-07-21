@@ -30,6 +30,7 @@
     "battlEye": {
       "enabled": true,
       "executable": "drive_c/windows/system32/belauncher.exe",
+      "launchMode": "main",
       "pathBase": "compatPrefix",
       "workingDir": "drive_c/Program Files (x86)/Tavernlight Games/RavenQuest/BattlEye",
       "workingDirBase": "compatPrefix",

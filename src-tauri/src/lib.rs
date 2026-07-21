@@ -68,6 +68,7 @@ struct BattlEyeConfig {
     executable: String,
     #[serde(default)]
     args: Vec<String>,
+    launch_mode: Option<String>,
     path_base: Option<String>,
     working_dir: Option<String>,
     working_dir_base: Option<String>,
@@ -575,20 +576,36 @@ fn should_launch_after_install(manifest: &GameManifest) -> bool {
     })
 }
 
-fn spawn_battl_eye_if_configured(
+fn battl_eye_replaces_main_process(manifest: &GameManifest) -> bool {
+    manifest
+        .launch
+        .battl_eye
+        .as_ref()
+        .filter(|battl_eye| battl_eye.enabled)
+        .and_then(|battl_eye| battl_eye.launch_mode.as_deref())
+        .map(|launch_mode| {
+            matches!(
+                launch_mode,
+                "main" | "replaceMain" | "replace-main" | "replace_main"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn build_battl_eye_runner_command(
     app: &tauri::AppHandle,
     game_id: &str,
     manifest: &GameManifest,
     resolved_runner: &runners::ResolvedRunner,
     install_path: &Path,
-) -> Result<(), String> {
+) -> Result<Option<runners::RunnerCommand>, String> {
     let Some(battl_eye) = manifest.launch.battl_eye.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
 
     if !battl_eye.enabled {
         append_runner_log(app, game_id, &["battl_eye_skipped=disabled".to_string()])?;
-        return Ok(());
+        return Ok(None);
     }
 
     let executable_path = configured_path_for_install(
@@ -628,7 +645,7 @@ fn spawn_battl_eye_if_configured(
             return Err(message);
         }
 
-        return Ok(());
+        return Ok(None);
     }
 
     let battl_eye_command = build_runner_command(
@@ -640,7 +657,14 @@ fn spawn_battl_eye_if_configured(
         &battl_eye.args,
         None,
     )?;
-    let mut command_log = vec!["battl_eye_start=true".to_string()];
+    let launch_mode = battl_eye
+        .launch_mode
+        .as_deref()
+        .unwrap_or("beforeMain");
+    let mut command_log = vec![
+        "battl_eye_start=true".to_string(),
+        format!("battl_eye_launch_mode={launch_mode}"),
+    ];
 
     command_log.extend(
         format_runner_command_for_log(&battl_eye_command)
@@ -648,6 +672,75 @@ fn spawn_battl_eye_if_configured(
             .map(|line| format!("battl_eye.{line}")),
     );
     append_runner_log(app, game_id, &command_log)?;
+
+    Ok(Some(battl_eye_command))
+}
+
+fn build_game_runner_command(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    manifest: &GameManifest,
+    resolved_runner: &runners::ResolvedRunner,
+    command_path: &Path,
+    install_path: &Path,
+) -> Result<runners::RunnerCommand, String> {
+    if battl_eye_replaces_main_process(manifest) {
+        append_runner_log(
+            app,
+            game_id,
+            &[
+                "main_executable_replaced_by_battl_eye=true".to_string(),
+                format!("main_executable_path={}", command_path.display()),
+            ],
+        )?;
+
+        if let Some(battl_eye_command) = build_battl_eye_runner_command(
+            app,
+            game_id,
+            manifest,
+            resolved_runner,
+            install_path,
+        )? {
+            return Ok(battl_eye_command);
+        }
+    }
+
+    build_runner_command(
+        app,
+        game_id,
+        resolved_runner,
+        command_path,
+        install_path,
+        &manifest.launch.args,
+        None,
+    )
+}
+
+fn spawn_battl_eye_if_configured(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    manifest: &GameManifest,
+    resolved_runner: &runners::ResolvedRunner,
+    install_path: &Path,
+) -> Result<(), String> {
+    if battl_eye_replaces_main_process(manifest) {
+        append_runner_log(
+            app,
+            game_id,
+            &["battl_eye_separate_spawn_skipped=main_launch_mode".to_string()],
+        )?;
+        return Ok(());
+    }
+
+    let Some(battl_eye_command) = build_battl_eye_runner_command(
+        app,
+        game_id,
+        manifest,
+        resolved_runner,
+        install_path,
+    )? else {
+        return Ok(());
+    };
 
     let mut command = Command::new(&battl_eye_command.program);
 
@@ -744,14 +837,13 @@ fn launch_install(
         ],
     )?;
 
-    let runner_command = build_runner_command(
+    let runner_command = build_game_runner_command(
         app,
         game_id,
+        manifest,
         &resolved_runner,
         &command_path,
         &install_path,
-        &manifest.launch.args,
-        None,
     )?;
     let mut command_log = format_runner_command_for_log(&runner_command);
 
@@ -1479,14 +1571,13 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         ));
     }
 
-    let runner_command = build_runner_command(
+    let runner_command = build_game_runner_command(
         &app,
         &game_id,
+        &manifest,
         &resolved_runner,
         &command_path,
         &install_path,
-        &manifest.launch.args,
-        None,
     )
     .map_err(|error| log_error_message(&app, &game_id, error))?;
 
