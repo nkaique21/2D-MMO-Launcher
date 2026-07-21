@@ -16,13 +16,15 @@
         "type": "windowsInstaller",
         "label": "Baixar instalador Windows",
         "runner": "wine",
+        "compatPrefix": "proton",
+        "installPath": "drive_c/Program Files (x86)/Tavernlight Games/RavenQuest Launcher",
         "url": "https://dw.ravenquest.io/ravenquest_installer.exe"
       }
     ]
   },
   "launch": {
     "runner": "proton",
-    "executable": null,
+    "executable": "launcher.exe",
     "args": []
   },
   "update": {

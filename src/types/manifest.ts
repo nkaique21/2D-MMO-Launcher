@@ -22,6 +22,8 @@ export type InstallMethod = {
   label: string;
   url?: string;
   runner?: string;
+  compatPrefix?: string;
+  installPath?: string;
 };
 
 export type LaunchConfig = {

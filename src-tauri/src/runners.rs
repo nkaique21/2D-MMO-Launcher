@@ -169,6 +169,21 @@ fn managed_prefix_dir(
     Ok(prefix_dir)
 }
 
+pub(crate) fn managed_windows_prefix_dir(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    prefix_kind: &str,
+) -> Result<PathBuf, String> {
+    match prefix_kind {
+        "proton" => Ok(managed_prefix_dir(app, game_id, "proton")?.join("pfx")),
+        "wine" => managed_prefix_dir(app, game_id, "wine"),
+        unsupported_prefix => Err(format!(
+            "Prefixo compatível '{}' não é suportado para instaladores Windows.",
+            unsupported_prefix
+        )),
+    }
+}
+
 fn managed_logs_dir(app: &tauri::AppHandle, game_id: &str) -> Result<PathBuf, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|error| {
         format!("Não foi possível resolver o diretório de dados do app: {error}")
@@ -465,6 +480,7 @@ pub(crate) fn build_runner_command(
     executable_path: &Path,
     install_path: &Path,
     launch_args: &[String],
+    compat_prefix_kind: Option<&str>,
 ) -> Result<RunnerCommand, String> {
     match runner.kind.as_str() {
         "native" => Ok(RunnerCommand {
@@ -481,7 +497,11 @@ pub(crate) fn build_runner_command(
                     runner.label
                 )
             })?;
-            let prefix_dir = managed_prefix_dir(app, game_id, "wine")?;
+            let prefix_dir = managed_windows_prefix_dir(
+                app,
+                game_id,
+                compat_prefix_kind.unwrap_or("wine"),
+            )?;
             let mut args = vec![executable_path.to_string_lossy().to_string()];
 
             args.extend_from_slice(launch_args);

@@ -10,7 +10,7 @@ use tauri::Manager;
 
 mod runners;
 
-use runners::{build_runner_command, list_runners, resolve_runner};
+use runners::{build_runner_command, list_runners, managed_windows_prefix_dir, resolve_runner};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +42,10 @@ struct InstallMethod {
     label: String,
     url: Option<String>,
     runner: Option<String>,
+    #[serde(rename = "compatPrefix")]
+    compat_prefix: Option<String>,
+    #[serde(rename = "installPath")]
+    install_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +147,29 @@ fn get_install(connection: &Connection, game_id: &str) -> Result<GameInstall, St
             },
         )
         .map_err(|error| format!("Não foi possível carregar a instalação de {game_id}: {error}"))
+}
+
+fn save_install(
+    connection: &Connection,
+    game_id: &str,
+    install_path: &str,
+    runner_override: Option<&str>,
+) -> Result<GameInstall, String> {
+    connection
+        .execute(
+            "
+            INSERT INTO installs (game_id, install_path, runner_override)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(game_id) DO UPDATE SET
+                install_path = excluded.install_path,
+                runner_override = excluded.runner_override,
+                updated_at = CURRENT_TIMESTAMP
+            ",
+            params![game_id, install_path, runner_override],
+        )
+        .map_err(|error| format!("Não foi possível salvar a instalação: {error}"))?;
+
+    get_install(connection, game_id)
 }
 
 fn open_path(path: &str) -> Result<(), String> {
@@ -464,20 +491,7 @@ fn locate_existing_install(
     let install_path = path.to_string_lossy().to_string();
     let connection = open_database(&app)?;
 
-    connection
-        .execute(
-            "
-            INSERT INTO installs (game_id, install_path, runner_override)
-            VALUES (?1, ?2, NULL)
-            ON CONFLICT(game_id) DO UPDATE SET
-                install_path = excluded.install_path,
-                updated_at = CURRENT_TIMESTAMP
-            ",
-            params![game_id, install_path],
-        )
-        .map_err(|error| format!("Não foi possível salvar a instalação localizada: {error}"))?;
-
-    Ok(Some(get_install(&connection, &game_id)?))
+    Ok(Some(save_install(&connection, &game_id, &install_path, None)?))
 }
 
 #[tauri::command]
@@ -571,6 +585,8 @@ fn download_and_run_installer(
         &[
             format!("manifest={}", manifest.name),
             format!("launch_runner={}", manifest.launch.runner),
+            format!("installer_compat_prefix={:?}", installer.compat_prefix),
+            format!("installer_install_path={:?}", installer.install_path),
             format!("installer_url={installer_url}"),
             format!("installer_path={}", installer_path.display()),
             format!("log_path={}", attempt_log_path.display()),
@@ -616,6 +632,7 @@ fn download_and_run_installer(
         &installer_path,
         &downloads_dir,
         &[],
+        installer.compat_prefix.as_deref(),
     )
     .map_err(|error| log_error_message(&app, &game_id, error))?;
 
@@ -655,6 +672,31 @@ fn download_and_run_installer(
             format!("process_pid={process_id}"),
         ],
     )?;
+
+    if let Some(relative_install_path) = installer.install_path.as_deref() {
+        let compat_prefix = installer.compat_prefix.as_deref().unwrap_or(installer_runner);
+        let install_root = managed_windows_prefix_dir(&app, &game_id, compat_prefix)
+            .map_err(|error| log_error_message(&app, &game_id, error))?;
+        let expected_install_path = install_root.join(relative_install_path);
+        let connection = open_database(&app).map_err(|error| log_error_message(&app, &game_id, error))?;
+        let saved_install = save_install(
+            &connection,
+            &game_id,
+            &expected_install_path.to_string_lossy(),
+            None,
+        )
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
+
+        append_runner_log(
+            &app,
+            &game_id,
+            &[
+                "install_registered=true".to_string(),
+                format!("registered_install_path={}", saved_install.install_path),
+            ],
+        )?;
+    }
+
     log_process_exit(app.clone(), game_id.clone(), process_id, child);
 
     Ok(LaunchResult {
@@ -763,6 +805,7 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         &command_path,
         &install_path,
         &manifest.launch.args,
+        None,
     )
     .map_err(|error| log_error_message(&app, &game_id, error))?;
 

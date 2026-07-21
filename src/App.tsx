@@ -325,7 +325,9 @@ function App() {
 
       try {
         const result = await downloadAndRunInstaller(selectedGame.id);
+        const refreshedInstalls = await listInstalls();
 
+        setInstalls(refreshedInstalls);
         setActionMessage(formatLaunchMessage('Instalador baixado e iniciado', result));
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
@@ -384,7 +386,9 @@ function App() {
 
       try {
         const result = await downloadAndRunInstaller(selectedGame.id);
+        const refreshedInstalls = await listInstalls();
 
+        setInstalls(refreshedInstalls);
         setActionMessage(formatLaunchMessage('Instalador baixado e iniciado', result));
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
