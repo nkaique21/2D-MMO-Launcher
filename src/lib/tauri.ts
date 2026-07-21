@@ -17,6 +17,10 @@ export function locateExistingInstall(gameId: string) {
   return invoke<GameInstall | null>('locate_existing_install', { gameId });
 }
 
+export function downloadAndRunInstaller(gameId: string) {
+  return invoke<LaunchResult>('download_and_run_installer', { gameId });
+}
+
 export function openInstallFolder(gameId: string) {
   return invoke<void>('open_install_folder', { gameId });
 }

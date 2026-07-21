@@ -3,6 +3,7 @@ import {
   listGames,
   listInstalls,
   listRunners,
+  downloadAndRunInstaller,
   launchGame,
   locateExistingInstall,
   openInstallFolder,
@@ -342,6 +343,22 @@ function App() {
         });
         setSelectedGameId(install.gameId);
         setActionMessage(`Instalação registrada em: ${install.installPath}`);
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPendingActionId(null);
+      }
+
+      return;
+    }
+
+    if (action.type === 'installMethod' && action.installMethodType === 'windowsInstaller') {
+      setPendingActionId(action.id);
+
+      try {
+        const result = await downloadAndRunInstaller(selectedGame.id);
+
+        setActionMessage(`Instalador baixado e iniciado via ${result.runner}: ${result.command}`);
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       } finally {

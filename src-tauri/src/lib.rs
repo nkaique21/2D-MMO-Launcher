@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 use tauri::Manager;
@@ -169,6 +170,68 @@ fn get_manifest(game_id: &str) -> Result<GameManifest, String> {
         .ok_or_else(|| format!("Manifesto não encontrado para o jogo {game_id}."))
 }
 
+fn sanitize_path_segment(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn filename_from_url(url: &str) -> String {
+    url.split('/')
+        .next_back()
+        .and_then(|segment| segment.split('?').next())
+        .filter(|segment| !segment.trim().is_empty())
+        .map(sanitize_path_segment)
+        .unwrap_or_else(|| "installer.exe".to_string())
+}
+
+fn download_file(url: &str, destination: &PathBuf) -> Result<(), String> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| format!("Destino de download inválido: {}", destination.display()))?;
+
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "Não foi possível criar o diretório de download {}: {error}",
+            parent.display()
+        )
+    })?;
+
+    let mut response = reqwest::blocking::get(url)
+        .map_err(|error| format!("Não foi possível baixar {url}: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Servidor retornou erro ao baixar {url}: {error}"))?;
+    let temporary_destination = destination.with_extension("download");
+    let mut output = fs::File::create(&temporary_destination).map_err(|error| {
+        format!(
+            "Não foi possível criar o arquivo temporário {}: {error}",
+            temporary_destination.display()
+        )
+    })?;
+
+    io::copy(&mut response, &mut output).map_err(|error| {
+        format!(
+            "Não foi possível salvar o download em {}: {error}",
+            temporary_destination.display()
+        )
+    })?;
+    fs::rename(&temporary_destination, destination).map_err(|error| {
+        format!(
+            "Não foi possível finalizar o download em {}: {error}",
+            destination.display()
+        )
+    })?;
+
+    Ok(())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Olá, {name}! O backend Tauri está pronto.")
@@ -299,6 +362,77 @@ fn remove_install(app: tauri::AppHandle, game_id: String) -> Result<bool, String
 }
 
 #[tauri::command]
+fn download_and_run_installer(
+    app: tauri::AppHandle,
+    game_id: String,
+) -> Result<LaunchResult, String> {
+    let game_id = game_id.trim().to_string();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    let manifest = get_manifest(&game_id)?;
+    let installer = manifest
+        .installation
+        .methods
+        .iter()
+        .find(|method| method.kind == "windowsInstaller")
+        .ok_or_else(|| {
+            format!(
+                "{} não possui método windowsInstaller no manifesto.",
+                manifest.name
+            )
+        })?;
+    let installer_url = installer.url.as_ref().ok_or_else(|| {
+        format!(
+            "O método windowsInstaller de {} não define uma URL de download.",
+            manifest.name
+        )
+    })?;
+    let downloads_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Não foi possível resolver o diretório de dados do app: {error}"))?
+        .join("downloads")
+        .join(sanitize_path_segment(&game_id));
+    let installer_path = downloads_dir.join(filename_from_url(installer_url));
+
+    download_file(installer_url, &installer_path)?;
+
+    let resolved_runner = resolve_runner(&app, &manifest.launch.runner)?;
+    let runner_command = build_runner_command(
+        &app,
+        &game_id,
+        &resolved_runner,
+        &installer_path,
+        &downloads_dir,
+        &[],
+    )?;
+    let mut command = Command::new(&runner_command.program);
+
+    command
+        .args(&runner_command.args)
+        .current_dir(&runner_command.working_dir)
+        .envs(runner_command.envs.iter().map(|(key, value)| (key, value)));
+
+    command.spawn().map_err(|error| {
+        format!(
+            "Não foi possível iniciar o instalador de {} usando {}: {error}",
+            manifest.name,
+            runner_command.program.display()
+        )
+    })?;
+
+    Ok(LaunchResult {
+        game_id,
+        runner: runner_command.runner_kind,
+        command: runner_command.program.to_string_lossy().to_string(),
+        working_dir: runner_command.working_dir.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
 fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, String> {
     let game_id = game_id.trim().to_string();
 
@@ -388,6 +522,7 @@ pub fn run() {
             list_installs,
             list_runners,
             locate_existing_install,
+            download_and_run_installer,
             open_install_folder,
             remove_install,
             launch_game

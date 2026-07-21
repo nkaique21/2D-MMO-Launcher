@@ -351,6 +351,9 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - Prefixos gerenciados por jogo são criados no diretório de dados do app em `compat-data/<game_id>/<runner_kind>`.
 - Wine recebe `WINEPREFIX` apontando para o prefixo gerenciado do jogo.
 - Proton monta comando `proton run <executável> ...args`, recebe `STEAM_COMPAT_DATA_PATH` apontando para o prefixo gerenciado e tenta preencher `STEAM_COMPAT_CLIENT_INSTALL_PATH` quando uma pasta Steam conhecida existe.
+- Foi adicionada dependência `reqwest` para downloads HTTP bloqueantes no backend Tauri.
+- O backend expõe `download_and_run_installer`, que lê o método `windowsInstaller` do manifesto, baixa o arquivo para `downloads/<game_id>/` no diretório de dados do app e inicia o instalador via runner resolvido.
+- O frontend expõe `downloadAndRunInstaller(gameId)` e a ação `Baixar instalador Windows` agora baixa/inicia o instalador do RavenQuest usando a URL do manifesto.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -367,6 +370,8 @@ Próximo passo recomendado para desenvolvimento:
    - Fazer `Verificar arquivos` indicar se a pasta registrada ainda existe e se contém o executável esperado quando esse dado estiver modelado.
 
 3. **Camada de runners**
+   - Validar o botão `Baixar instalador Windows` do RavenQuest em ambiente com Proton/UMU disponível.
+   - Após o instalador terminar, definir estratégia para registrar/localizar automaticamente a pasta final instalada dentro do prefixo.
    - Testar execução via Wine quando houver jogo/instalador Windows simples e Wine disponível.
    - Validar RavenQuest com Proton usando o prefixo gerenciado criado em `compat-data/ravenquest/proton`.
    - Persistir configurações avançadas de prefixo/runner no SQLite quando houver UI de configurações por jogo.
