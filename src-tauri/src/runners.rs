@@ -20,6 +20,13 @@ pub(crate) struct RunnerInfo {
     install_hint: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedRunner {
+    pub(crate) kind: String,
+    pub(crate) label: String,
+    pub(crate) path: Option<String>,
+}
+
 fn path_is_executable(path: &Path) -> bool {
     if !path.is_file() {
         return false;
@@ -195,8 +202,7 @@ fn discover_managed_runners(app: &tauri::AppHandle) -> Result<Vec<RunnerInfo>, S
     Ok(runners)
 }
 
-#[tauri::command]
-pub(crate) fn list_runners(app: tauri::AppHandle) -> Result<Vec<RunnerInfo>, String> {
+fn discover_runners(app: &tauri::AppHandle) -> Result<Vec<RunnerInfo>, String> {
     let mut runners = vec![runner_info(
         "native-system",
         "native",
@@ -297,4 +303,53 @@ pub(crate) fn list_runners(app: tauri::AppHandle) -> Result<Vec<RunnerInfo>, Str
     }
 
     Ok(runners)
+}
+
+pub(crate) fn resolve_runner(
+    app: &tauri::AppHandle,
+    requested_runner: &str,
+) -> Result<ResolvedRunner, String> {
+    let normalized_runner = requested_runner.trim().to_lowercase();
+
+    if normalized_runner.is_empty() {
+        return Err("Runner solicitado não pode ser vazio.".to_string());
+    }
+
+    let runners = discover_runners(app)?;
+
+    if let Some(runner) = runners
+        .iter()
+        .find(|runner| runner.kind == normalized_runner && runner.status == "available")
+    {
+        return Ok(ResolvedRunner {
+            kind: runner.kind.clone(),
+            label: runner.label.clone(),
+            path: runner.path.clone(),
+        });
+    }
+
+    if let Some(runner) = runners
+        .iter()
+        .find(|runner| runner.kind == normalized_runner && runner.installable)
+    {
+        let hint = runner
+            .install_hint
+            .as_deref()
+            .unwrap_or("Instalação de runner gerenciado ainda será implementada.");
+
+        return Err(format!(
+            "Runner '{}' não está disponível no sistema. Opção preparada: {}. {}",
+            normalized_runner, runner.label, hint
+        ));
+    }
+
+    Err(format!(
+        "Nenhum runner compatível com '{}' foi encontrado. Verifique o manifesto ou configure um runner suportado.",
+        normalized_runner
+    ))
+}
+
+#[tauri::command]
+pub(crate) fn list_runners(app: tauri::AppHandle) -> Result<Vec<RunnerInfo>, String> {
+    discover_runners(&app)
 }

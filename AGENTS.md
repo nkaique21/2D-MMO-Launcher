@@ -343,6 +343,8 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - Quando Wine ou Proton não são encontrados, `list_runners` retorna opções `installable` para Wine gerenciado e Proton-GE gerenciado, preparando a futura instalação automática pelo launcher.
 - O frontend consome `listRunners()` e exibe um painel inicial de compatibilidade/runners na lateral, mostrando runners disponíveis e opções instaláveis.
 - A descoberta de runners foi extraída de `src-tauri/src/lib.rs` para o módulo dedicado `src-tauri/src/runners.rs`, mantendo o contrato Tauri `list_runners` sem alteração para o frontend.
+- `src-tauri/src/runners.rs` agora expõe `resolve_runner`, que resolve o runner concreto a partir do valor pedido pelo manifesto ou `runner_override`.
+- `launch_game` passou a chamar `resolve_runner` antes de executar. A execução nativa continua funcionando; Wine/Proton ainda retornam erro orientativo quando resolvidos, até a etapa de spawn via runner ser implementada.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -359,8 +361,8 @@ Próximo passo recomendado para desenvolvimento:
    - Fazer `Verificar arquivos` indicar se a pasta registrada ainda existe e se contém o executável esperado quando esse dado estiver modelado.
 
 3. **Camada de runners**
-   - Extrair resolução de comando para um domínio `launcher`/`runner`.
-   - Evoluir o módulo `src-tauri/src/runners.rs` para resolver o runner concreto usado por cada jogo.
+   - Extrair resolução de comando final para um domínio `launcher`/`runner`, usando o runner concreto resolvido por `src-tauri/src/runners.rs`.
+   - Implementar spawn via Wine/Proton a partir do runner concreto resolvido.
    - Criar fluxo para instalar/registrar runners gerenciados pelo launcher quando Wine/Proton não existirem no sistema.
    - Implementar suporte progressivo a Wine/Proton para RavenQuest e Archlight.
    - Usar o instalador Windows do RavenQuest como base de teste para Proton/Wine.

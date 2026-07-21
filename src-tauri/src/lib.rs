@@ -7,7 +7,7 @@ use tauri::Manager;
 
 mod runners;
 
-use runners::list_runners;
+use runners::{list_runners, resolve_runner};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -309,14 +309,21 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
     let connection = open_database(&app)?;
     let install = get_install(&connection, &game_id)?;
     let manifest = get_manifest(&game_id)?;
-    let runner = install
+    let requested_runner = install
         .runner_override
         .clone()
         .unwrap_or_else(|| manifest.launch.runner.clone());
+    let resolved_runner = resolve_runner(&app, &requested_runner)?;
 
-    if runner != "native" {
+    if resolved_runner.kind != "native" {
+        let runner_path = resolved_runner
+            .path
+            .as_deref()
+            .unwrap_or("caminho ainda não resolvido");
+
         return Err(format!(
-            "O runner '{runner}' ainda não possui execução implementada. Próxima etapa: camada Wine/Proton/runners."
+            "Runner '{}' resolvido como '{}' ({runner_path}), mas execução via '{}' ainda não foi implementada. Próxima etapa: conectar Wine/Proton ao launcher.",
+            requested_runner, resolved_runner.label, resolved_runner.kind
         ));
     }
 
@@ -366,7 +373,7 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
 
     Ok(LaunchResult {
         game_id,
-        runner,
+        runner: resolved_runner.kind,
         command: command_path.to_string_lossy().to_string(),
         working_dir: install_path.to_string_lossy().to_string(),
     })
