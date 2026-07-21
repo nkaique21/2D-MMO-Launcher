@@ -57,6 +57,15 @@ struct GameInstall {
     updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchResult {
+    game_id: String,
+    runner: String,
+    command: String,
+    working_dir: String,
+}
+
 fn manifests_dir() -> Result<PathBuf, String> {
     let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
 
@@ -147,6 +156,13 @@ fn open_path(path: &str) -> Result<(), String> {
         .map_err(|error| format!("Não foi possível abrir o caminho {path}: {error}"))?;
 
     Ok(())
+}
+
+fn get_manifest(game_id: &str) -> Result<GameManifest, String> {
+    list_games()?
+        .into_iter()
+        .find(|game| game.id == game_id)
+        .ok_or_else(|| format!("Manifesto não encontrado para o jogo {game_id}."))
 }
 
 #[tauri::command]
@@ -278,6 +294,80 @@ fn remove_install(app: tauri::AppHandle, game_id: String) -> Result<bool, String
     Ok(removed_rows > 0)
 }
 
+#[tauri::command]
+fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, String> {
+    let game_id = game_id.trim().to_string();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    let connection = open_database(&app)?;
+    let install = get_install(&connection, &game_id)?;
+    let manifest = get_manifest(&game_id)?;
+    let runner = install
+        .runner_override
+        .clone()
+        .unwrap_or_else(|| manifest.launch.runner.clone());
+
+    if runner != "native" {
+        return Err(format!(
+            "O runner '{runner}' ainda não possui execução implementada. Próxima etapa: camada Wine/Proton/runners."
+        ));
+    }
+
+    let executable = manifest.launch.executable.as_ref().ok_or_else(|| {
+        format!(
+            "O manifesto de {} ainda não define launch.executable. Configure o executável antes de jogar.",
+            manifest.name
+        )
+    })?;
+
+    let install_path = PathBuf::from(&install.install_path);
+
+    if !install_path.exists() {
+        return Err(format!(
+            "A pasta registrada para {} não existe mais: {}",
+            manifest.name,
+            install_path.display()
+        ));
+    }
+
+    let executable_path = PathBuf::from(executable);
+    let command_path = if executable_path.is_absolute() {
+        executable_path
+    } else {
+        install_path.join(executable_path)
+    };
+
+    if !command_path.exists() {
+        return Err(format!(
+            "Executável não encontrado para {}: {}",
+            manifest.name,
+            command_path.display()
+        ));
+    }
+
+    Command::new(&command_path)
+        .args(&manifest.launch.args)
+        .current_dir(&install_path)
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "Não foi possível iniciar {} usando {}: {error}",
+                manifest.name,
+                command_path.display()
+            )
+        })?;
+
+    Ok(LaunchResult {
+        game_id,
+        runner,
+        command: command_path.to_string_lossy().to_string(),
+        working_dir: install_path.to_string_lossy().to_string(),
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -287,7 +377,8 @@ pub fn run() {
             list_installs,
             locate_existing_install,
             open_install_folder,
-            remove_install
+            remove_install,
+            launch_game
         ])
         .run(tauri::generate_context!())
         .expect("erro ao executar o 2D MMO Launcher");

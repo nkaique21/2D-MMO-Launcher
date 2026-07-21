@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   listGames,
   listInstalls,
+  launchGame,
   locateExistingInstall,
   openInstallFolder,
   removeInstall,
@@ -157,6 +158,7 @@ function App() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
+  const [isLaunching, setIsLaunching] = useState(false);
   const [reloadSignal, setReloadSignal] = useState(0);
 
   useEffect(() => {
@@ -277,6 +279,27 @@ function App() {
   }
 
   const secondaryActions = getSecondaryActions(selectedGame);
+
+  async function handlePrimaryAction() {
+    setActionError(null);
+    setActionMessage(null);
+
+    if (selectedGame.status !== 'installed') {
+      setActionMessage('Use “Localizar instalação existente” para registrar este jogo antes de jogar.');
+      return;
+    }
+
+    setIsLaunching(true);
+
+    try {
+      const result = await launchGame(selectedGame.id);
+      setActionMessage(`Jogo iniciado via ${result.runner}: ${result.command}`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLaunching(false);
+    }
+  }
 
   async function handleSecondaryAction(action: SecondaryAction) {
     setActionError(null);
@@ -503,9 +526,11 @@ function App() {
                   <div className="mt-8 flex flex-wrap items-center gap-3">
                     <button
                       className="rounded-2xl bg-white px-8 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 shadow-[0_18px_60px_rgba(255,255,255,0.16)] transition hover:-translate-y-0.5 hover:bg-purple-100"
+                      disabled={isLaunching}
+                      onClick={() => void handlePrimaryAction()}
                       type="button"
                     >
-                      {selectedGame.status === 'installed' ? 'Jogar' : 'Baixar e instalar'}
+                      {isLaunching ? 'Iniciando...' : selectedGame.status === 'installed' ? 'Jogar' : 'Baixar e instalar'}
                     </button>
                     <button
                       className="rounded-2xl border border-white/[0.12] bg-white/[0.07] px-5 py-4 text-sm font-bold text-white/78 backdrop-blur-md transition hover:border-white/25 hover:bg-white/[0.12] hover:text-white"

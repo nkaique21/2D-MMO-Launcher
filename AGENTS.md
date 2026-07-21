@@ -315,28 +315,34 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - O backend expõe `open_install_folder` para abrir a pasta registrada da instalação e `remove_install` para desvincular/remover o registro local do SQLite.
 - O frontend expõe `openInstallFolder(gameId)` e `removeInstall(gameId)` em `src/lib/tauri.ts` e conectou as ações secundárias `Abrir pasta` e `Desvincular instalação`.
 - Ao desvincular uma instalação, o jogo sai da sidebar de instalados e volta para o catálogo sem remover arquivos do disco.
+- Foi adicionada a infraestrutura inicial do botão `Jogar` com o comando Tauri `launch_game`.
+- `launch_game` resolve manifesto + instalação salva, usa `runner_override` quando existir e executa via `Command::spawn` apenas para runner `native`.
+- Quando o runner ainda não é suportado ou `launch.executable` está ausente no manifesto, o backend retorna mensagens explícitas em vez de tentar executar algo indefinido.
+- O frontend expõe `launchGame(gameId)` e conectou o botão principal `Jogar`, mostrando estado `Iniciando...`, sucesso ou erro retornado pelo backend.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
 
 Próximo passo recomendado para desenvolvimento:
 
-1. **Botão Jogar**
-   - Resolver runner pelo manifesto/configuração.
-   - Usar o caminho salvo em `installs`.
-   - Montar comando de execução.
-   - Fazer spawn pelo backend Rust, não pelo frontend.
-   - Registrar sessão para futuro tempo jogado.
+1. **Completar dados de execução nos manifestos**
+   - Definir `launch.executable` para jogos nativos quando houver executável conhecido.
+   - Avaliar se o manifesto precisa de campos adicionais para validação de pasta, executáveis alternativos ou argumentos por plataforma.
 
 2. **Validar instalações registradas**
    - Preparar validação por manifesto para confirmar executável/estrutura esperada.
    - Fazer `Verificar arquivos` indicar se a pasta registrada ainda existe e se contém o executável esperado quando esse dado estiver modelado.
 
-3. **Modularizar backend SQLite**
+3. **Camada de runners**
+   - Extrair resolução de comando para um domínio `launcher`/`runner`.
+   - Implementar suporte progressivo a Wine/Proton para RavenQuest e Archlight.
+   - Registrar sessão para futuro tempo jogado quando o spawn for bem-sucedido.
+
+4. **Modularizar backend SQLite**
    - Extrair a lógica SQLite atual de `src-tauri/src/lib.rs` para um módulo `database`.
    - Preparar uma estrutura simples de migrations para evoluir `installs`, `game_settings` e `runners` sem concentrar tudo em `lib.rs`.
 
-4. **Depois avançar para download/instalação automática**
+5. **Depois avançar para download/instalação automática**
    - Só iniciar depois que catálogo, instalações existentes e execução básica estiverem bem definidos.
 
 Critério de arquitetura: sempre que uma funcionalidade parecer específica demais para um jogo, tentar modelar como manifesto, runner, método de instalação ou configuração persistida.

@@ -39,3 +39,10 @@ export type GameInstall = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type LaunchResult = {
+  gameId: string;
+  runner: string;
+  command: string;
+  workingDir: string;
+};

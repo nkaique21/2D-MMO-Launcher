@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { GameInstall, GameManifest } from '../types/manifest';
+import type { GameInstall, GameManifest, LaunchResult } from '../types/manifest';
 
 export function listGames() {
   return invoke<GameManifest[]>('list_games');
@@ -19,4 +19,8 @@ export function openInstallFolder(gameId: string) {
 
 export function removeInstall(gameId: string) {
   return invoke<boolean>('remove_install', { gameId });
+}
+
+export function launchGame(gameId: string) {
+  return invoke<LaunchResult>('launch_game', { gameId });
 }
