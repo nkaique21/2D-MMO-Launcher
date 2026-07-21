@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { listGames } from './lib/tauri';
-import type { GameManifest } from './types/manifest';
+import { listGames, listInstalls } from './lib/tauri';
+import type { GameInstall, GameManifest } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
 
@@ -67,10 +67,6 @@ const visualMetadataByGameId: Record<string, GameVisualMetadata> = {
   },
 };
 
-// TODO(SQLite): substituir por instalações persistidas em `installs`.
-// Manifestos descrevem o catálogo; este Set temporário simula o estado local do usuário.
-const temporaryInstalledGameIds = new Set(['pokexgames', 'zezenia', 'medivia']);
-
 function buildShortName(name: string) {
   const initials = name
     .split(/\s+/)
@@ -101,8 +97,8 @@ function formatRunner(runner: string) {
   return runner || 'Não definido';
 }
 
-function toViewModel(game: GameManifest): GameViewModel {
-  const status: InstallationStatus = temporaryInstalledGameIds.has(game.id) ? 'installed' : 'available';
+function toViewModel(game: GameManifest, installedGameIds: Set<string>): GameViewModel {
+  const status: InstallationStatus = installedGameIds.has(game.id) ? 'installed' : 'available';
   const runner = game.launch.runner.toLowerCase();
 
   return {
@@ -127,6 +123,7 @@ function getSecondaryActions(game: GameViewModel) {
 
 function App() {
   const [manifests, setManifests] = useState<GameManifest[]>([]);
+  const [installs, setInstalls] = useState<GameInstall[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -138,11 +135,12 @@ function App() {
     setIsLoading(true);
     setLoadError(null);
 
-    listGames()
-      .then((catalog) => {
+    Promise.all([listGames(), listInstalls()])
+      .then(([catalog, localInstalls]) => {
         if (!isMounted) return;
 
         setManifests(catalog);
+        setInstalls(localInstalls);
         setSelectedGameId((currentGameId) => {
           const currentGameStillExists = catalog.some((game) => game.id === currentGameId);
 
@@ -155,6 +153,7 @@ function App() {
         if (!isMounted) return;
 
         setManifests([]);
+        setInstalls([]);
         setSelectedGameId(null);
         setLoadError(error instanceof Error ? error.message : String(error));
       })
@@ -167,7 +166,14 @@ function App() {
     };
   }, [reloadSignal]);
 
-  const games = useMemo(() => manifests.map(toViewModel), [manifests]);
+  const installedGameIds = useMemo(
+    () => new Set(installs.map((install) => install.gameId)),
+    [installs],
+  );
+  const games = useMemo(
+    () => manifests.map((manifest) => toViewModel(manifest, installedGameIds)),
+    [installedGameIds, manifests],
+  );
   const installedGames = useMemo(() => games.filter((game) => game.status === 'installed'), [games]);
   const manifestGames = useMemo(() => games.filter((game) => game.status === 'available'), [games]);
 
@@ -347,7 +353,7 @@ function App() {
                 })
               ) : (
                 <div className="min-w-[260px] rounded-3xl border border-white/10 bg-white/[0.055] p-4 text-sm text-launcher-muted">
-                  Todos os jogos carregados estão marcados como instalados temporariamente.
+                  Nenhuma instalação foi registrada no SQLite ainda. Use os métodos do manifesto para localizar ou instalar jogos.
                 </div>
               )}
             </div>

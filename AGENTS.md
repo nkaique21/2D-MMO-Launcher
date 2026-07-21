@@ -303,35 +303,35 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - `npm run tauri dev` compilou o backend Rust e iniciou `target/debug/two-d-mmo-launcher` com sucesso no ambiente local.
 - `src/App.tsx` foi refatorado para carregar o catálogo real via `listGames()`/`list_games`, usando `GameManifest[]` vindo do backend Tauri.
 - O frontend agora usa descrição, assets, runner e métodos de instalação vindos dos manifestos locais.
-- Ainda existe apenas uma camada temporária de instalação local (`temporaryInstalledGameIds`) até SQLite/tabela `installs` ser implementada.
+- Foi adicionada uma base SQLite inicial com `rusqlite` no backend Tauri.
+- O banco local é criado no diretório de dados do app como `launcher.sqlite`.
+- A tabela inicial `installs` foi criada para registrar instalações locais por `game_id`, `install_path`, `runner_override`, `created_at` e `updated_at`.
+- O backend expõe `list_installs`, e o frontend consome esse comando via `listInstalls()`.
+- `src/App.tsx` não usa mais `temporaryInstalledGameIds`; o estado instalado/disponível agora vem da tabela `installs`.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
 
 Próximo passo recomendado para desenvolvimento:
 
-1. **Separar conceito de catálogo e instalação**
+1. **Localizar instalação existente**
    - Manifestos representam jogos disponíveis.
    - Instalações representam jogos realmente instalados/localizados no computador do usuário.
-   - Até existir SQLite, pode haver estado mockado/temporário, mas deve ser fácil remover.
-
-2. **Introduzir SQLite**
-   - Escolher crate compatível com Tauri/Rust, por exemplo `rusqlite` ou alternativa adequada.
-   - Criar módulo `database`.
-   - Criar migrations/tabelas iniciais: `installs`, `game_settings`, `runners` primeiro.
-
-3. **Localizar instalação existente**
    - Criar comando Tauri para selecionar pasta/arquivo.
-   - Salvar caminho em SQLite.
+   - Salvar caminho em SQLite na tabela `installs`.
    - Atualizar UI para mover jogo para área de instalados quando existir instalação registrada.
 
-4. **Botão Jogar**
+2. **Modularizar backend SQLite**
+   - Extrair a lógica SQLite atual de `src-tauri/src/lib.rs` para um módulo `database`.
+   - Preparar uma estrutura simples de migrations para evoluir `installs`, `game_settings` e `runners` sem concentrar tudo em `lib.rs`.
+
+3. **Botão Jogar**
    - Resolver runner pelo manifesto/configuração.
    - Montar comando de execução.
    - Fazer spawn pelo backend Rust, não pelo frontend.
    - Registrar sessão para futuro tempo jogado.
 
-5. **Depois avançar para download/instalação automática**
+4. **Depois avançar para download/instalação automática**
    - Só iniciar depois que catálogo, instalações existentes e execução básica estiverem bem definidos.
 
 Critério de arquitetura: sempre que uma funcionalidade parecer específica demais para um jogo, tentar modelar como manifesto, runner, método de instalação ou configuração persistida.

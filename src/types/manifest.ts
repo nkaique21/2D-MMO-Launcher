@@ -31,3 +31,11 @@ export type LaunchConfig = {
 export type UpdateConfig = {
   strategy: string;
 };
+
+export type GameInstall = {
+  gameId: string;
+  installPath: string;
+  runnerOverride: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
