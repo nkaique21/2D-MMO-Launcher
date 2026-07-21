@@ -10,8 +10,9 @@ import {
   openInstallFolder,
   removeInstall,
   runGameUpdate,
+  runGameRemoteUpdate,
 } from './lib/tauri';
-import type { GameInstall, GameManifest, RunnerInfo } from './types/manifest';
+import type { GameInstall, GameManifest, GameUpdateProgress, RunnerInfo } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
 
@@ -128,6 +129,14 @@ function formatLaunchMessage(prefix: string, result: { runner: string; command: 
   return `${prefix} via ${result.runner}: ${result.command}.${logMessage}`;
 }
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
 function toViewModel(game: GameManifest, installedGameIds: Set<string>): GameViewModel {
   const status: InstallationStatus = installedGameIds.has(game.id) ? 'installed' : 'available';
   const runner = game.launch.runner.toLowerCase();
@@ -150,6 +159,14 @@ function getSecondaryActions(game: GameViewModel): SecondaryAction[] {
       { id: 'remove-install', label: 'Desvincular instalação', type: 'installedAction' },
       { id: 'configure', label: 'Configurar', type: 'installedAction' },
     ];
+
+    if (game.update.strategy === 'remoteManifest') {
+      installedActions.unshift({
+        id: 'run-remote-update',
+        label: 'Atualizar arquivos do jogo',
+        type: 'installedAction',
+      });
+    }
 
     if (game.update.strategy === 'externalLauncher') {
       installedActions.unshift({
@@ -186,6 +203,7 @@ function App() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<GameUpdateProgress | null>(null);
   const [isLaunching, setIsLaunching] = useState(false);
   const [reloadSignal, setReloadSignal] = useState(0);
 
@@ -240,6 +258,21 @@ function App() {
         return [...otherInstalls, event.payload];
       });
       setSelectedGameId(event.payload.gameId);
+    });
+
+    return () => {
+      isMounted = false;
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const unlistenPromise = listen<GameUpdateProgress>('game-update-progress', (event) => {
+      if (!isMounted) return;
+
+      setUpdateProgress(event.payload);
     });
 
     return () => {
@@ -453,6 +486,27 @@ function App() {
         const result = await runGameUpdate(selectedGame.id);
 
         setActionMessage(formatLaunchMessage('Updater iniciado', result));
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPendingActionId(null);
+      }
+
+      return;
+    }
+
+    if (action.type === 'installedAction' && action.id === 'run-remote-update') {
+      setPendingActionId(action.id);
+      setUpdateProgress(null);
+      setActionMessage('Preparando atualização dos arquivos...');
+
+      try {
+        const result = await runGameRemoteUpdate(selectedGame.id);
+        const logMessage = result.logPath ? ` Log: ${result.logPath}` : '';
+
+        setActionMessage(
+          `Update concluído: ${result.updatedFiles} arquivo(s) baixado(s), ${result.skippedFiles} já estavam atualizados, ${formatBytes(result.downloadedBytes)} transferidos.${logMessage}`,
+        );
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       } finally {
@@ -713,6 +767,36 @@ function App() {
                   </button>
                 ))}
               </section>
+
+              {updateProgress && updateProgress.gameId === selectedGame.id && (
+                <section className="rounded-[1.75rem] border border-sky-300/20 bg-sky-500/[0.08] p-5 text-sm text-sky-100">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-[0.2em] text-sky-200">
+                        Atualização
+                      </p>
+                      <p className="mt-1 font-black">{updateProgress.message}</p>
+                    </div>
+                    <span className="rounded-full bg-black/20 px-3 py-1 text-xs font-black uppercase tracking-[0.14em] ring-1 ring-white/10">
+                      {updateProgress.status}
+                    </span>
+                  </div>
+                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-black/25 ring-1 ring-white/[0.08]">
+                    <div
+                      className="h-full rounded-full bg-sky-300 transition-all"
+                      style={{
+                        width: `${updateProgress.totalFiles > 0
+                          ? Math.min(100, Math.round((updateProgress.checkedFiles / updateProgress.totalFiles) * 100))
+                          : 8}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-sky-100/80">
+                    {updateProgress.checkedFiles}/{updateProgress.totalFiles} verificados • {updateProgress.updatedFiles} baixados
+                    {updateProgress.currentFile ? ` • ${updateProgress.currentFile}` : ''}
+                  </p>
+                </section>
+              )}
 
               <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-5 backdrop-blur-2xl">
                 <div className="flex items-center justify-between gap-3">

@@ -60,6 +60,10 @@ export type UpdateConfig = {
   workingDirBase?: string;
   env?: Record<string, string>;
   unsetEnv?: string[];
+  manifestUrl?: string;
+  manifestFormat?: string;
+  targetDir?: string;
+  targetDirBase?: string;
 };
 
 export type GameInstall = {
@@ -76,6 +80,26 @@ export type LaunchResult = {
   command: string;
   workingDir: string;
   logPath: string | null;
+};
+
+export type GameUpdateResult = {
+  gameId: string;
+  checkedFiles: number;
+  updatedFiles: number;
+  skippedFiles: number;
+  downloadedBytes: number;
+  targetDir: string;
+  logPath: string | null;
+};
+
+export type GameUpdateProgress = {
+  gameId: string;
+  status: string;
+  checkedFiles: number;
+  updatedFiles: number;
+  totalFiles: number;
+  currentFile: string | null;
+  message: string;
 };
 
 export type RunnerInfo = {

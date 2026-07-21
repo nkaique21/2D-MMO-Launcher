@@ -391,8 +391,13 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - Foi adicionada atualização delegada por manifesto via `update.strategy: "externalLauncher"`. `UpdateConfig` agora aceita `runner`, `compatPrefix`, `executable`, `args`, `pathBase`, `workingDir`, `workingDirBase`, `env` e `unsetEnv` opcionais.
 - O backend expõe `run_game_update`, que resolve instalação/manifesto, monta comando com o runner configurado, aplica ambiente de launch + update, registra `action=run_game_update` no `runner.log` e inicia o updater externo.
 - O frontend expõe `runGameUpdate(gameId)` e mostra a ação secundária `Atualizar pelo launcher oficial` apenas para jogos instalados com `update.strategy: "externalLauncher"`.
-- O RavenQuest agora usa `update.strategy: "externalLauncher"` para abrir `launcher.exe` via Wine no prefixo Proton (`compatPrefix: "proton"`), mantendo o botão `Jogar` via `ravenquest_dx_BE.exe`/BattlEye e a atualização pelo launcher oficial.
+- Foi adicionada atualização/verificação por manifesto remoto via `update.strategy: "remoteManifest"`. `UpdateConfig` agora aceita `manifestUrl`, `manifestFormat`, `targetDir` e `targetDirBase` opcionais.
+- O backend expõe `run_game_remote_update`, que baixa/decodifica o manifesto remoto, resolve o diretório alvo por manifesto, verifica CRC32/tamanho dos arquivos locais e baixa apenas arquivos ausentes ou divergentes.
+- O RavenQuest agora usa `update.strategy: "remoteManifest"`, lendo `https://dw.ravenquest.io/ravenquest/checksums.txt.gz` no formato `ravenquestZlib` e aplicando em `drive_c/Program Files (x86)/Tavernlight Games/RavenQuest` dentro do prefixo Proton.
+- No update remoto, o backend mescla `files` e `binary` do manifesto remoto em um único mapa antes de iterar. Isso garante que `binary.file` (ex.: `ravenquest_dx.exe`) também seja verificado/baixado e evita duplicidade se o mesmo caminho aparecer em `files`. O `runner.log` registra `remote_binary_file=...` para diagnóstico.
+- O frontend expõe `runGameRemoteUpdate(gameId)`, escuta o evento `game-update-progress` e mostra ação secundária de verificação/update remoto para jogos instalados com `update.strategy: "remoteManifest"`, preservando `Atualizar pelo launcher oficial` para `externalLauncher`.
 - Validações executadas após esse ajuste: `cargo fmt --manifest-path src-tauri/Cargo.toml`, `cargo check --manifest-path src-tauri/Cargo.toml` e `npm run build` passaram.
+- Validações executadas após o update remoto e inclusão de `binary`: `npm run build` e `cargo check --manifest-path src-tauri/Cargo.toml` passaram.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -413,7 +418,7 @@ Próximo passo recomendado para desenvolvimento:
    - Se o instalador não abrir, consultar `logs/ravenquest/runner.log` no diretório de dados do app para analisar stdout/stderr do Wine/Proton.
    - Validar o auto-launch pós-instalação do RavenQuest (`launchAfterInstall`) após uma instalação limpa e após uma instalação reconciliada de prefixo antigo.
    - Validar o RavenQuest em execução real com BattlEye e conferir no `runner.log` se aparecem `main_executable_replaced_by_battl_eye=true`, `battl_eye_launch_mode=main`, `env.PROTONPATH=...GE-Proton11-1`, `env.PROTON_BATTLEYE_RUNTIME=...battleye_runtime`, `unset_env.GAMEID=true` e `unset_env.STORE=true`.
-   - Testar a ação `Atualizar pelo launcher oficial` do RavenQuest instalado e conferir no `runner.log` `action=run_game_update`, `update_strategy=externalLauncher`, `update_process_started=true` e se o updater oficial baixa/aplica updates sem quebrar o launch via BattlEye.
+   - Testar a ação de update/verificação remota do RavenQuest instalado e conferir no `runner.log` `action=run_game_remote_update`, `update_strategy=remoteManifest`, `remote_binary_file=Some("ravenquest_dx.exe")` ou caminho equivalente vindo do manifesto remoto, e confirmar que o executável principal é verificado/baixado junto com os demais arquivos.
    - Se o jogo ainda reclamar anti-cheat, conferir se os runtimes do Lutris existem nos caminhos declarados no manifesto e se o runner resolvido é `system-umu-run`; depois avaliar tornar esses caminhos configuráveis por UI/SQLite.
    - Testar execução via Wine quando houver jogo/instalador Windows simples e Wine disponível.
    - Validar RavenQuest com Proton usando o prefixo gerenciado criado em `compat-data/ravenquest/proton`.

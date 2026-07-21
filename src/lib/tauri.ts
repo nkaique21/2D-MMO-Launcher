@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { GameInstall, GameManifest, LaunchResult, RunnerInfo } from '../types/manifest';
+import type { GameInstall, GameManifest, GameUpdateResult, LaunchResult, RunnerInfo } from '../types/manifest';
 
 export function listGames() {
   return invoke<GameManifest[]>('list_games');
@@ -23,6 +23,10 @@ export function downloadAndRunInstaller(gameId: string) {
 
 export function runGameUpdate(gameId: string) {
   return invoke<LaunchResult>('run_game_update', { gameId });
+}
+
+export function runGameRemoteUpdate(gameId: string) {
+  return invoke<GameUpdateResult>('run_game_remote_update', { gameId });
 }
 
 export function openInstallFolder(gameId: string) {

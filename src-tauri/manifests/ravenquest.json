@@ -48,10 +48,10 @@
     }
   },
   "update": {
-    "strategy": "externalLauncher",
-    "runner": "wine",
-    "compatPrefix": "proton",
-    "executable": "launcher.exe",
-    "args": []
+    "strategy": "remoteManifest",
+    "manifestUrl": "https://dw.ravenquest.io/ravenquest/checksums.txt.gz",
+    "manifestFormat": "ravenquestZlib",
+    "targetDir": "drive_c/Program Files (x86)/Tavernlight Games/RavenQuest",
+    "targetDirBase": "compatPrefix"
   }
 }
