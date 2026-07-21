@@ -11,3 +11,4 @@ src-tauri/gen/
 .DS_Store
 .vscode/
 *.swp
+AGENTS.md

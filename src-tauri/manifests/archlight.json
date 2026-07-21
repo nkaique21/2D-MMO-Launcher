@@ -15,7 +15,7 @@
     ]
   },
   "launch": {
-    "runner": "native",
+    "runner": "proton",
     "executable": null,
     "args": []
   },

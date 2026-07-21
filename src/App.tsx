@@ -1,166 +1,328 @@
-import { useEffect, useMemo, useState } from 'react';
-import { listGames } from './lib/tauri';
-import type { GameManifest } from './types/manifest';
+import { useMemo, useState } from 'react';
 
-const cardAccents = [
-  'from-violet-500 to-fuchsia-500',
-  'from-purple-500 to-indigo-500',
-  'from-sky-500 to-violet-500',
-  'from-emerald-400 to-purple-500',
-  'from-rose-500 to-violet-500',
-  'from-amber-400 to-purple-600',
+type Game = {
+  id: string;
+  name: string;
+  shortName: string;
+  description: string;
+  status: 'installed' | 'available';
+  installLabel: string;
+  runner: 'Native' | 'Proton';
+  protonOnly?: boolean;
+  banner: string;
+  icon: string;
+  accent: string;
+  softAccent: string;
+  meta: string;
+};
+
+const games: Game[] = [
+  {
+    id: 'ravenquest',
+    name: 'RavenQuest',
+    shortName: 'RQ',
+    description: 'Economia viva, mundo persistente e progressão aberta em um MMORPG 2D moderno.',
+    status: 'available',
+    installLabel: 'Manifesto disponível',
+    runner: 'Proton',
+    protonOnly: true,
+    banner: '/assets/games/ravenquest/banner.png',
+    icon: '/assets/games/ravenquest/icon.png',
+    accent: 'from-violet-500 via-fuchsia-500 to-rose-500',
+    softAccent: 'bg-violet-500/15 text-violet-100 ring-violet-300/20',
+    meta: 'Sandbox • Open world',
+  },
+  {
+    id: 'archlight',
+    name: 'Archlight',
+    shortName: 'AL',
+    description: 'Progressão customizada, combate rápido e foco em temporadas para fãs de MMORPG 2D.',
+    status: 'available',
+    installLabel: 'Manifesto disponível',
+    runner: 'Proton',
+    protonOnly: true,
+    banner: '/assets/games/archlight/banner.png',
+    icon: '/assets/games/archlight/icon.png',
+    accent: 'from-orange-400 via-red-500 to-purple-700',
+    softAccent: 'bg-orange-500/15 text-orange-100 ring-orange-300/20',
+    meta: 'Seasonal • Custom systems',
+  },
+  {
+    id: 'pokexgames',
+    name: 'PokeXGames',
+    shortName: 'PXG',
+    description: 'Aventura monster-catching em formato MMO com instalação localizada manualmente.',
+    status: 'installed',
+    installLabel: 'Instalado',
+    runner: 'Native',
+    banner: '/assets/games/pokexgames/banner.png',
+    icon: '/assets/games/pokexgames/icon.png',
+    accent: 'from-indigo-500 via-purple-500 to-sky-500',
+    softAccent: 'bg-indigo-500/15 text-indigo-100 ring-indigo-300/20',
+    meta: 'Monster catching • Manual',
+  },
+  {
+    id: 'grand-line-adventures',
+    name: 'Grand Line Adventures',
+    shortName: 'GLA',
+    description: 'Aventura 2D inspirada em anime, pronta para entrar no catálogo por manifesto.',
+    status: 'available',
+    installLabel: 'Manifesto disponível',
+    runner: 'Native',
+    banner: '/assets/games/grand-line-adventures/banner.png',
+    icon: '/assets/games/grand-line-adventures/icon.png',
+    accent: 'from-sky-400 via-cyan-500 to-blue-700',
+    softAccent: 'bg-sky-500/15 text-sky-100 ring-sky-300/20',
+    meta: 'Anime • Adventure',
+  },
+  {
+    id: 'zezenia',
+    name: 'Zezenia',
+    shortName: 'ZZ',
+    description: 'MMORPG clássico com instalação existente localizada pelo launcher.',
+    status: 'installed',
+    installLabel: 'Instalado',
+    runner: 'Native',
+    banner: '/assets/games/zezenia/banner.png',
+    icon: '/assets/games/zezenia/icon.png',
+    accent: 'from-emerald-400 via-teal-500 to-purple-600',
+    softAccent: 'bg-emerald-500/15 text-emerald-100 ring-emerald-300/20',
+    meta: 'Classic • Persistent world',
+  },
+  {
+    id: 'medivia',
+    name: 'Medivia',
+    shortName: 'MV',
+    description: 'Experiência old-school com foco em exploração e comunidade.',
+    status: 'installed',
+    installLabel: 'Instalado',
+    runner: 'Native',
+    banner: '/assets/games/medivia/banner.png',
+    icon: '/assets/games/medivia/icon.png',
+    accent: 'from-amber-300 via-yellow-600 to-stone-900',
+    softAccent: 'bg-amber-500/15 text-amber-100 ring-amber-300/20',
+    meta: 'Old school • Exploration',
+  },
 ];
 
-const navItems = ['Library', 'Downloads', 'Settings'];
+const installedGames = games.filter((game) => game.status === 'installed');
+const manifestGames = games.filter((game) => game.status === 'available');
 
 function App() {
-  const [games, setGames] = useState<GameManifest[]>([]);
-  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-
-  useEffect(() => {
-    listGames()
-      .then((loadedGames) => {
-        setGames(loadedGames);
-        setSelectedGameId(loadedGames[0]?.id ?? null);
-        setCatalogError(null);
-      })
-      .catch((error) => {
-        setCatalogError(error instanceof Error ? error.message : String(error));
-      });
-  }, []);
+  const [selectedGameId, setSelectedGameId] = useState(games[0].id);
 
   const selectedGame = useMemo(
     () => games.find((game) => game.id === selectedGameId) ?? games[0],
-    [games, selectedGameId],
+    [selectedGameId],
   );
 
+  const secondaryActions = selectedGame.status === 'installed'
+    ? ['Verificar arquivos', 'Abrir pasta', 'Configurar']
+    : ['Instalar', 'Detalhes do manifesto', 'Configurar runner'];
+
   return (
-    <main className="min-h-screen bg-launcher-bg text-launcher-text">
-      <div className="flex min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(139,92,246,0.24),transparent_32rem),radial-gradient(circle_at_bottom_right,rgba(91,33,182,0.24),transparent_34rem)]">
-        <aside className="flex w-72 flex-col border-r border-launcher-border bg-black/30 px-5 py-6 backdrop-blur-xl">
-          <div className="mb-10 flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-2xl bg-purple-600 shadow-glow">
-              <span className="text-lg font-black">2D</span>
-            </div>
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-purple-300">MMO</p>
-              <h1 className="text-xl font-bold">Launcher</h1>
-            </div>
+    <main className="min-h-screen overflow-hidden bg-launcher-bg text-launcher-text">
+      <div className="flex min-h-screen bg-[radial-gradient(circle_at_10%_0%,rgba(139,92,246,0.22),transparent_28rem),radial-gradient(circle_at_82%_18%,rgba(14,165,233,0.12),transparent_24rem),linear-gradient(135deg,rgba(255,255,255,0.03),transparent_42%)]">
+        <aside className="flex w-[104px] flex-col items-center border-r border-white/10 bg-black/35 px-4 py-5 backdrop-blur-2xl">
+          <div className="grid h-14 w-14 place-items-center rounded-[1.35rem] bg-white/10 ring-1 ring-white/15 shadow-glow">
+            <span className="bg-gradient-to-br from-white to-purple-200 bg-clip-text text-lg font-black text-transparent">
+              2D
+            </span>
           </div>
 
-          <nav className="space-y-2">
-            {navItems.map((item) => (
-              <button
-                className={`w-full rounded-2xl px-4 py-3 text-left text-sm font-semibold transition ${
-                  item === 'Library'
-                    ? 'bg-purple-600 text-white shadow-glow'
-                    : 'text-launcher-muted hover:bg-white/5 hover:text-white'
-                }`}
-                key={item}
-                type="button"
-              >
-                {item}
-              </button>
-            ))}
-          </nav>
-
-          <div className="mt-auto rounded-3xl border border-launcher-border bg-launcher-panelSoft p-4">
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-purple-300">MVP</p>
-            <p className="mt-2 text-sm text-launcher-muted">
-              Etapa 2: shell visual, tema escuro e áreas base do launcher.
+          <div className="mt-9 flex w-full flex-1 flex-col items-center gap-3">
+            <p className="mb-1 [writing-mode:vertical-rl] rotate-180 text-[0.63rem] font-black uppercase tracking-[0.28em] text-launcher-muted">
+              Instalados
             </p>
+            {installedGames.map((game) => {
+              const isActive = game.id === selectedGame.id;
+
+              return (
+                <button
+                  aria-label={game.name}
+                  className={`group relative grid h-16 w-16 place-items-center rounded-3xl border transition duration-200 ${
+                    isActive
+                      ? 'border-purple-300/70 bg-white/15 shadow-glow'
+                      : 'border-white/10 bg-white/[0.055] hover:border-white/25 hover:bg-white/10'
+                  }`}
+                  key={game.id}
+                  onClick={() => setSelectedGameId(game.id)}
+                  title={game.name}
+                  type="button"
+                >
+                  <span className={`absolute inset-2 rounded-[1.15rem] bg-gradient-to-br ${game.accent} opacity-80 blur-[1px]`} />
+                  <span className="relative text-sm font-black tracking-tight text-white drop-shadow">
+                    {game.shortName}
+                  </span>
+                  {isActive && <span className="absolute -right-5 h-9 w-1 rounded-full bg-purple-300" />}
+                </button>
+              );
+            })}
           </div>
+
+          <button
+            className="grid h-12 w-12 place-items-center rounded-2xl border border-white/10 bg-white/[0.055] text-xl text-launcher-muted transition hover:border-purple-300/40 hover:text-white"
+            type="button"
+          >
+            +
+          </button>
         </aside>
 
-        <section className="flex flex-1 flex-col overflow-hidden">
-          <header className="border-b border-launcher-border bg-launcher-bg/70 px-8 py-6 backdrop-blur-xl">
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-purple-300">
-              Biblioteca
-            </p>
-            <div className="mt-2 flex items-end justify-between gap-6">
+        <section className="flex min-w-0 flex-1 flex-col">
+          <header className="border-b border-white/10 bg-launcher-bg/55 px-8 pb-6 pt-5 backdrop-blur-2xl">
+            <div className="flex items-center justify-between gap-6">
               <div>
-                <h2 className="text-4xl font-black tracking-tight">Seus MMORPGs 2D</h2>
-                <p className="mt-2 max-w-2xl text-launcher-muted">
-                  Uma base extensível onde os jogos serão carregados por manifestos JSON, sem
-                  lógica específica por jogo.
+                <p className="text-xs font-black uppercase tracking-[0.28em] text-purple-300">
+                  Catálogo por manifesto
                 </p>
+                <h1 className="mt-1 text-2xl font-black tracking-tight">2D MMO Launcher</h1>
               </div>
-              <button
-                className="rounded-2xl border border-purple-400/40 bg-purple-500/10 px-5 py-3 text-sm font-bold text-purple-100 transition hover:bg-purple-500/20"
-                type="button"
-              >
-                {games.length} manifestos
-              </button>
+              <div className="flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.045] px-4 py-2 text-xs font-semibold text-launcher-muted">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.75)]" />
+                Manifestos locais carregados
+              </div>
             </div>
-          </header>
 
-          <div className="grid flex-1 grid-cols-[1fr_380px] gap-6 overflow-auto p-8">
-            <section>
-              {catalogError ? (
-                <div className="rounded-3xl border border-red-400/30 bg-red-950/30 p-6 text-red-100">
-                  <p className="font-bold">Erro ao carregar catálogo</p>
-                  <p className="mt-2 text-sm opacity-80">{catalogError}</p>
-                </div>
-              ) : null}
+            <div className="mt-6 flex gap-3 overflow-x-auto pb-1">
+              {manifestGames.map((game) => {
+                const isActive = game.id === selectedGame.id;
 
-              <div className="grid grid-cols-2 gap-5">
-                {games.map((game, index) => (
-                  <article
-                    className={`group overflow-hidden rounded-3xl border bg-launcher-panel shadow-2xl shadow-black/30 transition hover:-translate-y-1 hover:border-purple-400/60 ${
-                      selectedGame?.id === game.id ? 'border-purple-400/70' : 'border-launcher-border'
+                return (
+                  <button
+                    className={`group min-w-[218px] rounded-3xl border p-3 text-left transition duration-200 ${
+                      isActive
+                        ? 'border-purple-300/60 bg-white/[0.14] shadow-glow'
+                        : 'border-white/10 bg-white/[0.055] hover:border-white/25 hover:bg-white/10'
                     }`}
                     key={game.id}
                     onClick={() => setSelectedGameId(game.id)}
+                    type="button"
                   >
-                    <div className={`h-36 bg-gradient-to-br ${cardAccents[index % cardAccents.length]} opacity-90`} />
-                    <div className="p-5">
-                      <p className="text-xs font-bold uppercase tracking-[0.18em] text-purple-300">
-                        MMORPG 2D
-                      </p>
-                      <h3 className="mt-2 text-2xl font-black">{game.name}</h3>
-                      <p className="mt-2 line-clamp-2 text-sm text-launcher-muted">
-                        {game.description}
-                      </p>
+                    <div className="flex items-center gap-3">
+                      <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br ${game.accent} text-xs font-black shadow-lg shadow-black/30`}>
+                        {game.shortName}
+                      </div>
+                      <div className="min-w-0">
+                        <h2 className="truncate text-sm font-black text-white">{game.name}</h2>
+                        <p className="mt-0.5 truncate text-xs text-launcher-muted">{game.installLabel}</p>
+                      </div>
                     </div>
-                  </article>
-                ))}
-              </div>
+                    <div className="mt-3 flex items-center gap-2">
+                      <span className={`rounded-full px-2.5 py-1 text-[0.63rem] font-black uppercase tracking-[0.16em] ring-1 ${game.softAccent}`}>
+                        {game.runner}
+                      </span>
+                      {game.protonOnly && (
+                        <span className="rounded-full bg-white/[0.08] px-2.5 py-1 text-[0.63rem] font-bold text-purple-100 ring-1 ring-white/10">
+                          exclusivo
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </header>
+
+          <div className="grid flex-1 grid-cols-[minmax(0,1fr)_320px] gap-6 overflow-auto p-8">
+            <section className="min-w-0">
+              <article className="relative min-h-[520px] overflow-hidden rounded-[2rem] border border-white/10 bg-launcher-panel shadow-2xl shadow-black/40">
+                <div
+                  className="absolute inset-0 bg-cover bg-center opacity-70"
+                  style={{
+                    backgroundImage: `linear-gradient(90deg, rgba(7,7,16,0.92) 0%, rgba(7,7,16,0.58) 46%, rgba(7,7,16,0.26) 100%), url(${selectedGame.banner})`,
+                  }}
+                />
+                <div className={`absolute inset-0 bg-gradient-to-br ${selectedGame.accent} opacity-20`} />
+                <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-launcher-bg via-launcher-bg/70 to-transparent" />
+
+                <div className="relative flex min-h-[520px] max-w-3xl flex-col justify-end p-8 lg:p-10">
+                  <div className="mb-auto flex flex-wrap items-center gap-3">
+                    <span className="rounded-full border border-white/[0.12] bg-black/30 px-3 py-1.5 text-xs font-black uppercase tracking-[0.2em] text-white/85 backdrop-blur-md">
+                      {selectedGame.status === 'installed' ? 'Na sua biblioteca' : 'Disponível para instalar'}
+                    </span>
+                    {selectedGame.protonOnly && (
+                      <span className="rounded-full border border-purple-200/20 bg-purple-500/[0.18] px-3 py-1.5 text-xs font-black uppercase tracking-[0.2em] text-purple-100 backdrop-blur-md">
+                        Proton obrigatório
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-sm font-bold uppercase tracking-[0.24em] text-purple-200/90">
+                    {selectedGame.meta}
+                  </p>
+                  <h2 className="mt-3 max-w-2xl text-6xl font-black leading-[0.92] tracking-[-0.06em] text-white">
+                    {selectedGame.name}
+                  </h2>
+                  <p className="mt-5 max-w-xl text-base leading-7 text-launcher-muted">
+                    {selectedGame.description}
+                  </p>
+
+                  <div className="mt-8 flex flex-wrap items-center gap-3">
+                    <button
+                      className="rounded-2xl bg-white px-8 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 shadow-[0_18px_60px_rgba(255,255,255,0.16)] transition hover:-translate-y-0.5 hover:bg-purple-100"
+                      type="button"
+                    >
+                      {selectedGame.status === 'installed' ? 'Jogar' : 'Baixar e instalar'}
+                    </button>
+                    <button
+                      className="rounded-2xl border border-white/[0.12] bg-white/[0.07] px-5 py-4 text-sm font-bold text-white/78 backdrop-blur-md transition hover:border-white/25 hover:bg-white/[0.12] hover:text-white"
+                      type="button"
+                    >
+                      Ver detalhes
+                    </button>
+                  </div>
+                </div>
+              </article>
             </section>
 
-            <aside className="rounded-3xl border border-launcher-border bg-launcher-panel/90 p-6 shadow-2xl shadow-black/40">
-              <div className="rounded-3xl bg-gradient-to-br from-purple-600 via-violet-700 to-slate-950 p-6 shadow-glow">
-                <p className="text-xs font-bold uppercase tracking-[0.22em] text-purple-100/80">
-                  Selecionado
-                </p>
-                <h3 className="mt-20 text-3xl font-black">{selectedGame?.name ?? 'Catálogo'}</h3>
-                <p className="mt-2 text-sm text-purple-100/80">
-                  {selectedGame?.description ?? 'Nenhum manifesto carregado.'}
-                </p>
-              </div>
-
-              <div className="mt-6 space-y-3">
-                <button className="w-full rounded-2xl bg-purple-600 px-5 py-4 font-bold shadow-glow transition hover:bg-purple-500" type="button">
-                  Jogar
-                </button>
-                <button className="w-full rounded-2xl border border-launcher-border bg-white/5 px-5 py-4 font-bold text-launcher-muted transition hover:bg-white/10 hover:text-white" type="button">
-                  Localizar instalação
-                </button>
-                <button className="w-full rounded-2xl border border-launcher-border bg-white/5 px-5 py-4 font-bold text-launcher-muted transition hover:bg-white/10 hover:text-white" type="button">
-                  Configurações do jogo
-                </button>
-              </div>
-
-              <div className="mt-6 grid grid-cols-2 gap-3 text-sm">
-                <div className="rounded-2xl bg-white/5 p-4">
-                  <p className="text-launcher-muted">Runner</p>
-                  <p className="mt-1 font-bold capitalize">{selectedGame?.launch.runner ?? '-'}</p>
+            <aside className="space-y-4">
+              <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-5 backdrop-blur-2xl">
+                <div className="flex items-center gap-4">
+                  <div className={`grid h-16 w-16 place-items-center rounded-3xl bg-gradient-to-br ${selectedGame.accent} text-sm font-black shadow-glow`}>
+                    {selectedGame.shortName}
+                  </div>
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.2em] text-launcher-muted">
+                      Selecionado
+                    </p>
+                    <h3 className="mt-1 text-xl font-black">{selectedGame.name}</h3>
+                  </div>
                 </div>
-                <div className="rounded-2xl bg-white/5 p-4">
-                  <p className="text-launcher-muted">Update</p>
-                  <p className="mt-1 font-bold capitalize">{selectedGame?.update.strategy ?? '-'}</p>
+
+                <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-2xl bg-black/20 p-4 ring-1 ring-white/[0.08]">
+                    <p className="text-xs text-launcher-muted">Runner</p>
+                    <p className="mt-1 font-black">{selectedGame.runner}</p>
+                  </div>
+                  <div className="rounded-2xl bg-black/20 p-4 ring-1 ring-white/[0.08]">
+                    <p className="text-xs text-launcher-muted">Estado</p>
+                    <p className="mt-1 font-black">{selectedGame.status === 'installed' ? 'Instalado' : 'Catálogo'}</p>
+                  </div>
                 </div>
-              </div>
+              </section>
+
+              <section className="rounded-[1.75rem] border border-white/10 bg-launcher-panel/80 p-3 shadow-2xl shadow-black/30">
+                {secondaryActions.map((action) => (
+                  <button
+                    className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-sm font-semibold text-launcher-muted transition hover:bg-white/[0.065] hover:text-white"
+                    key={action}
+                    type="button"
+                  >
+                    {action}
+                    <span className="text-white/25">›</span>
+                  </button>
+                ))}
+              </section>
+
+              <section className="rounded-[1.75rem] border border-purple-300/15 bg-purple-500/[0.065] p-5">
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-purple-200">
+                  Nota de compatibilidade
+                </p>
+                <p className="mt-3 text-sm leading-6 text-launcher-muted">
+                  RavenQuest e Archlight ficam marcados como exclusivos para execução via Proton.
+                  Os demais podem manter runner nativo quando o manifesto permitir.
+                </p>
+              </section>
             </aside>
           </div>
         </section>
