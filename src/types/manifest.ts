@@ -51,6 +51,15 @@ export type BattlEyeConfig = {
 
 export type UpdateConfig = {
   strategy: string;
+  runner?: string;
+  compatPrefix?: string;
+  executable?: string;
+  args?: string[];
+  pathBase?: string;
+  workingDir?: string;
+  workingDirBase?: string;
+  env?: Record<string, string>;
+  unsetEnv?: string[];
 };
 
 export type GameInstall = {

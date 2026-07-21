@@ -48,6 +48,10 @@
     }
   },
   "update": {
-    "strategy": "manual"
+    "strategy": "externalLauncher",
+    "runner": "wine",
+    "compatPrefix": "proton",
+    "executable": "launcher.exe",
+    "args": []
   }
 }

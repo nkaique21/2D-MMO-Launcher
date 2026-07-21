@@ -9,6 +9,7 @@ import {
   locateExistingInstall,
   openInstallFolder,
   removeInstall,
+  runGameUpdate,
 } from './lib/tauri';
 import type { GameInstall, GameManifest, RunnerInfo } from './types/manifest';
 
@@ -143,12 +144,22 @@ function toViewModel(game: GameManifest, installedGameIds: Set<string>): GameVie
 
 function getSecondaryActions(game: GameViewModel): SecondaryAction[] {
   if (game.status === 'installed') {
-    return [
+    const installedActions: SecondaryAction[] = [
       { id: 'verify-files', label: 'Verificar arquivos', type: 'installedAction' },
       { id: 'open-folder', label: 'Abrir pasta', type: 'installedAction' },
       { id: 'remove-install', label: 'Desvincular instalação', type: 'installedAction' },
       { id: 'configure', label: 'Configurar', type: 'installedAction' },
     ];
+
+    if (game.update.strategy === 'externalLauncher') {
+      installedActions.unshift({
+        id: 'run-update',
+        label: 'Atualizar pelo launcher oficial',
+        type: 'installedAction',
+      });
+    }
+
+    return installedActions;
   }
 
   const installActions = game.installation.methods.map<SecondaryAction>((method) => ({
@@ -426,6 +437,22 @@ function App() {
       try {
         await openInstallFolder(selectedGame.id);
         setActionMessage('Pasta da instalação aberta.');
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPendingActionId(null);
+      }
+
+      return;
+    }
+
+    if (action.type === 'installedAction' && action.id === 'run-update') {
+      setPendingActionId(action.id);
+
+      try {
+        const result = await runGameUpdate(selectedGame.id);
+
+        setActionMessage(formatLaunchMessage('Updater iniciado', result));
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       } finally {

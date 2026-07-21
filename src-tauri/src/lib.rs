@@ -87,6 +87,22 @@ struct BattlEyeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UpdateConfig {
     strategy: String,
+    runner: Option<String>,
+    #[serde(rename = "compatPrefix")]
+    compat_prefix: Option<String>,
+    executable: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(rename = "pathBase")]
+    path_base: Option<String>,
+    #[serde(rename = "workingDir")]
+    working_dir: Option<String>,
+    #[serde(rename = "workingDirBase")]
+    working_dir_base: Option<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(rename = "unsetEnv", default)]
+    unset_env: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -334,15 +350,19 @@ fn expand_manifest_env_value(value: &str) -> String {
     value.to_string()
 }
 
-fn apply_launch_environment(manifest: &GameManifest, command: &mut runners::RunnerCommand) {
-    for (key, value) in &manifest.launch.env {
+fn apply_environment_overrides(
+    command: &mut runners::RunnerCommand,
+    env: &HashMap<String, String>,
+    unset_env: &[String],
+) {
+    for (key, value) in env {
         command.envs.retain(|(existing_key, _)| existing_key != key);
         command
             .envs
             .push((key.clone(), expand_manifest_env_value(value)));
     }
 
-    for key in &manifest.launch.unset_env {
+    for key in unset_env {
         command.envs.retain(|(existing_key, _)| existing_key != key);
 
         if !command
@@ -353,6 +373,15 @@ fn apply_launch_environment(manifest: &GameManifest, command: &mut runners::Runn
             command.unset_envs.push(key.clone());
         }
     }
+}
+
+fn apply_launch_environment(manifest: &GameManifest, command: &mut runners::RunnerCommand) {
+    apply_environment_overrides(command, &manifest.launch.env, &manifest.launch.unset_env);
+}
+
+fn apply_update_environment(manifest: &GameManifest, command: &mut runners::RunnerCommand) {
+    apply_launch_environment(manifest, command);
+    apply_environment_overrides(command, &manifest.update.env, &manifest.update.unset_env);
 }
 
 fn is_windows_system_path(path: &Path) -> bool {
@@ -889,6 +918,77 @@ fn build_game_runner_command(
         None,
     )?;
     apply_launch_environment(manifest, &mut runner_command);
+
+    Ok(runner_command)
+}
+
+fn build_update_runner_command(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    manifest: &GameManifest,
+    resolved_runner: &runners::ResolvedRunner,
+    install_path: &Path,
+) -> Result<runners::RunnerCommand, String> {
+    if manifest.update.strategy != "externalLauncher" {
+        return Err(format!(
+            "{} não possui atualização por launcher externo configurada.",
+            manifest.name
+        ));
+    }
+
+    let executable = manifest
+        .update
+        .executable
+        .as_deref()
+        .or(manifest.launch.executable.as_deref())
+        .ok_or_else(|| {
+            format!(
+                "O update de {} não define executable, e launch.executable também está vazio.",
+                manifest.name
+            )
+        })?;
+    let executable_path = configured_path_for_install(
+        app,
+        game_id,
+        install_path,
+        executable,
+        manifest.update.path_base.as_deref(),
+        &resolved_runner.kind,
+    )?;
+    let working_dir = if let Some(working_dir) = manifest.update.working_dir.as_deref() {
+        configured_path_for_install(
+            app,
+            game_id,
+            install_path,
+            working_dir,
+            manifest.update.working_dir_base.as_deref(),
+            &resolved_runner.kind,
+        )?
+    } else {
+        executable_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| install_path.to_path_buf())
+    };
+
+    if !executable_path.exists() {
+        return Err(format!(
+            "Updater externo não encontrado para {}: {}",
+            manifest.name,
+            executable_path.display()
+        ));
+    }
+
+    let mut runner_command = build_runner_command(
+        app,
+        game_id,
+        resolved_runner,
+        &executable_path,
+        &working_dir,
+        &manifest.update.args,
+        manifest.update.compat_prefix.as_deref(),
+    )?;
+    apply_update_environment(manifest, &mut runner_command);
 
     Ok(runner_command)
 }
@@ -1669,6 +1769,124 @@ fn download_and_run_installer(
 }
 
 #[tauri::command]
+fn run_game_update(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, String> {
+    let game_id = game_id.trim().to_string();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    let attempt_log_path = append_runner_log(
+        &app,
+        &game_id,
+        &[
+            "action=run_game_update".to_string(),
+            format!("game_id={game_id}"),
+        ],
+    )?;
+
+    let connection =
+        open_database(&app).map_err(|error| log_error_message(&app, &game_id, error))?;
+    let install = get_install(&connection, &game_id)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
+    let manifest =
+        get_manifest(&game_id).map_err(|error| log_error_message(&app, &game_id, error))?;
+    let install =
+        reconcile_registered_install_path(&app, &connection, &game_id, &manifest, install)
+            .map_err(|error| log_error_message(&app, &game_id, error))?;
+    let install_path = PathBuf::from(&install.install_path);
+
+    if !install_path.exists() {
+        return Err(log_error_message(
+            &app,
+            &game_id,
+            format!(
+                "A pasta registrada para {} não existe mais: {}",
+                manifest.name,
+                install_path.display()
+            ),
+        ));
+    }
+
+    let requested_runner = manifest
+        .update
+        .runner
+        .clone()
+        .or_else(|| install.runner_override.clone())
+        .unwrap_or_else(|| manifest.launch.runner.clone());
+    let resolved_runner = resolve_runner(&app, &requested_runner)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
+
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            format!("manifest={}", manifest.name),
+            format!("install_path={}", install.install_path),
+            format!("update_strategy={}", manifest.update.strategy),
+            format!("update_runner={:?}", manifest.update.runner),
+            format!("update_executable={:?}", manifest.update.executable),
+            format!("requested_runner={requested_runner}"),
+            format!("resolved_runner_id={}", resolved_runner.id),
+            format!("resolved_runner_kind={}", resolved_runner.kind),
+            format!("resolved_runner_label={}", resolved_runner.label),
+            format!("resolved_runner_source={}", resolved_runner.source),
+            format!("resolved_runner_path={:?}", resolved_runner.path),
+            format!("log_path={}", attempt_log_path.display()),
+        ],
+    )?;
+
+    let runner_command =
+        build_update_runner_command(&app, &game_id, &manifest, &resolved_runner, &install_path)
+            .map_err(|error| log_error_message(&app, &game_id, error))?;
+    let mut command_log = format_runner_command_for_log(&runner_command);
+
+    command_log.extend(host_environment_for_log());
+    append_runner_log(&app, &game_id, &command_log)?;
+
+    let mut command = Command::new(&runner_command.program);
+
+    command
+        .args(&runner_command.args)
+        .current_dir(&runner_command.working_dir);
+    apply_runner_command_environment(&mut command, &runner_command);
+
+    let log_path = attach_process_logs(&app, &game_id, &mut command)?;
+
+    let child = command.spawn().map_err(|error| {
+        log_error_message(
+            &app,
+            &game_id,
+            format!(
+                "Não foi possível iniciar o updater de {} usando {}: {error}. Log: {}",
+                manifest.name,
+                runner_command.program.display(),
+                log_path.display()
+            ),
+        )
+    })?;
+    let process_id = child.id();
+
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            "update_process_started=true".to_string(),
+            format!("update_process_pid={process_id}"),
+        ],
+    )?;
+    log_process_exit(app.clone(), game_id.clone(), process_id, child);
+
+    Ok(LaunchResult {
+        game_id,
+        runner: runner_command.runner_kind,
+        command: runner_command.program.to_string_lossy().to_string(),
+        working_dir: runner_command.working_dir.to_string_lossy().to_string(),
+        log_path: Some(log_path.to_string_lossy().to_string()),
+    })
+}
+
+#[tauri::command]
 fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, String> {
     let game_id = game_id.trim().to_string();
 
@@ -1829,6 +2047,7 @@ pub fn run() {
             list_runners,
             locate_existing_install,
             download_and_run_installer,
+            run_game_update,
             open_install_folder,
             remove_install,
             launch_game
