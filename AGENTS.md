@@ -398,6 +398,12 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - O frontend expõe `runGameRemoteUpdate(gameId)`, escuta o evento `game-update-progress` e mostra ação secundária de verificação/update remoto para jogos instalados com `update.strategy: "remoteManifest"`, preservando `Atualizar pelo launcher oficial` para `externalLauncher`.
 - Validações executadas após esse ajuste: `cargo fmt --manifest-path src-tauri/Cargo.toml`, `cargo check --manifest-path src-tauri/Cargo.toml` e `npm run build` passaram.
 - Validações executadas após o update remoto e inclusão de `binary`: `npm run build` e `cargo check --manifest-path src-tauri/Cargo.toml` passaram.
+- Diagnóstico real do update remoto do RavenQuest mostrou que o manifesto remoto possui cerca de 27k arquivos (`remote_file_count=27452`), e a implementação síncrona anterior fazia o launcher parecer travado durante verificação/download.
+- `run_game_remote_update` agora é assíncrono e executa a verificação/download dentro de `tauri::async_runtime::spawn_blocking`, evitando bloquear a UI enquanto percorre muitos arquivos.
+- Downloads HTTP do manifesto remoto e dos arquivos agora usam cliente `reqwest::blocking::Client` com timeout de 60s, evitando ficar pendurado indefinidamente em uma requisição remota.
+- O update remoto emite eventos `game-update-progress` durante a fase `checking` a cada 100 arquivos e registra checkpoints no `runner.log` a cada 1000 arquivos com `remote_update_progress=checking`; cada download também registra `remote_update_progress=downloading` e `current_file=...`.
+- A UI agora exibe um painel visual de atualização no hero do jogo selecionado, com porcentagem grande, barra progressiva em gradiente, fase atual, arquivo sendo verificado/baixado e contadores de arquivos verificados/baixados, inspirado na experiência visual de launchers como Twintail.
+- Validações executadas após o ajuste anti-travamento/progresso visual: `cargo fmt --manifest-path src-tauri/Cargo.toml`, `npm run build` e `cargo check --manifest-path src-tauri/Cargo.toml` passaram.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -418,7 +424,7 @@ Próximo passo recomendado para desenvolvimento:
    - Se o instalador não abrir, consultar `logs/ravenquest/runner.log` no diretório de dados do app para analisar stdout/stderr do Wine/Proton.
    - Validar o auto-launch pós-instalação do RavenQuest (`launchAfterInstall`) após uma instalação limpa e após uma instalação reconciliada de prefixo antigo.
    - Validar o RavenQuest em execução real com BattlEye e conferir no `runner.log` se aparecem `main_executable_replaced_by_battl_eye=true`, `battl_eye_launch_mode=main`, `env.PROTONPATH=...GE-Proton11-1`, `env.PROTON_BATTLEYE_RUNTIME=...battleye_runtime`, `unset_env.GAMEID=true` e `unset_env.STORE=true`.
-   - Testar a ação de update/verificação remota do RavenQuest instalado e conferir no `runner.log` `action=run_game_remote_update`, `update_strategy=remoteManifest`, `remote_binary_file=Some("ravenquest_dx.exe")` ou caminho equivalente vindo do manifesto remoto, e confirmar que o executável principal é verificado/baixado junto com os demais arquivos.
+   - Testar a ação de update/verificação remota do RavenQuest instalado e conferir se a UI mostra barra, porcentagem e arquivo atual sem congelar. No `runner.log`, conferir `action=run_game_remote_update`, `update_strategy=remoteManifest`, `remote_binary_file=Some("/ravenquest_dx.exe")` ou caminho equivalente vindo do manifesto remoto, `remote_update_progress=checking` e `remote_update_progress=downloading` quando houver arquivos divergentes.
    - Se o jogo ainda reclamar anti-cheat, conferir se os runtimes do Lutris existem nos caminhos declarados no manifesto e se o runner resolvido é `system-umu-run`; depois avaliar tornar esses caminhos configuráveis por UI/SQLite.
    - Testar execução via Wine quando houver jogo/instalador Windows simples e Wine disponível.
    - Validar RavenQuest com Proton usando o prefixo gerenciado criado em `compat-data/ravenquest/proton`.

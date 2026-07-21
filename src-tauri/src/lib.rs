@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 mod runners;
@@ -145,6 +145,10 @@ struct RemoteUpdateManifest {
 fn default_true() -> bool {
     true
 }
+
+const HTTP_TIMEOUT_SECONDS: u64 = 60;
+const REMOTE_UPDATE_PROGRESS_INTERVAL: usize = 100;
+const REMOTE_UPDATE_LOG_INTERVAL: usize = 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1078,8 +1082,18 @@ fn emit_update_progress(
     );
 }
 
+fn http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|error| format!("Não foi possível preparar cliente HTTP: {error}"))
+}
+
 fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let mut response = reqwest::blocking::get(url)
+    let client = http_client()?;
+    let mut response = client
+        .get(url)
+        .send()
         .map_err(|error| format!("Não foi possível baixar {url}: {error}"))?
         .error_for_status()
         .map_err(|error| format!("Servidor retornou erro ao baixar {url}: {error}"))?;
@@ -1327,6 +1341,38 @@ fn run_remote_manifest_update(
 
     for (remote_path, expected) in remote_files {
         checked_files += 1;
+
+        if checked_files == 1
+            || checked_files % REMOTE_UPDATE_PROGRESS_INTERVAL == 0
+            || checked_files == total_files
+        {
+            emit_update_progress(
+                &app,
+                &game_id,
+                "checking",
+                checked_files,
+                updated_files,
+                total_files,
+                Some(remote_path.clone()),
+                format!("Verificando {checked_files} de {total_files} arquivos..."),
+            );
+        }
+
+        if checked_files % REMOTE_UPDATE_LOG_INTERVAL == 0 {
+            append_runner_log(
+                &app,
+                &game_id,
+                &[
+                    "remote_update_progress=checking".to_string(),
+                    format!("checked_files={checked_files}"),
+                    format!("updated_files={updated_files}"),
+                    format!("skipped_files={skipped_files}"),
+                    format!("total_files={total_files}"),
+                    format!("current_file={remote_path}"),
+                ],
+            )?;
+        }
+
         let relative_path = safe_remote_relative_path(&remote_path)
             .map_err(|error| log_error_message(&app, &game_id, error))?;
         let destination = target_dir.join(relative_path);
@@ -1348,6 +1394,18 @@ fn run_remote_manifest_update(
             Some(remote_path.clone()),
             format!("Baixando {remote_path}"),
         );
+
+        append_runner_log(
+            &app,
+            &game_id,
+            &[
+                "remote_update_progress=downloading".to_string(),
+                format!("checked_files={checked_files}"),
+                format!("updated_files={updated_files}"),
+                format!("total_files={total_files}"),
+                format!("current_file={remote_path}"),
+            ],
+        )?;
 
         let file_url = remote_file_url(&remote_manifest.url, &remote_path);
         let temporary_destination = destination.with_extension("download");
@@ -1650,7 +1708,10 @@ fn download_file(url: &str, destination: &PathBuf) -> Result<(), String> {
         )
     })?;
 
-    let mut response = reqwest::blocking::get(url)
+    let client = http_client()?;
+    let mut response = client
+        .get(url)
+        .send()
         .map_err(|error| format!("Não foi possível baixar {url}: {error}"))?
         .error_for_status()
         .map_err(|error| format!("Servidor retornou erro ao baixar {url}: {error}"))?;
@@ -2340,7 +2401,7 @@ fn run_game_update(app: tauri::AppHandle, game_id: String) -> Result<LaunchResul
 }
 
 #[tauri::command]
-fn run_game_remote_update(
+async fn run_game_remote_update(
     app: tauri::AppHandle,
     game_id: String,
 ) -> Result<GameUpdateResult, String> {
@@ -2394,7 +2455,11 @@ fn run_game_remote_update(
         ));
     }
 
-    run_remote_manifest_update(app, game_id, manifest, install_path, attempt_log_path)
+    tauri::async_runtime::spawn_blocking(move || {
+        run_remote_manifest_update(app, game_id, manifest, install_path, attempt_log_path)
+    })
+    .await
+    .map_err(|error| format!("A tarefa de update remoto falhou: {error}"))?
 }
 
 #[tauri::command]

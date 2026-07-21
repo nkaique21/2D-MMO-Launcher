@@ -137,6 +137,28 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
+const integerFormatter = new Intl.NumberFormat('pt-BR');
+
+function formatInteger(value: number) {
+  return integerFormatter.format(value);
+}
+
+function formatUpdateStatus(status: string) {
+  if (status === 'manifest') return 'Manifesto';
+  if (status === 'checking') return 'Verificando';
+  if (status === 'downloading') return 'Baixando';
+  if (status === 'done') return 'Concluído';
+
+  return status || 'Atualizando';
+}
+
+function getUpdatePercent(progress: GameUpdateProgress | null) {
+  if (!progress) return 0;
+  if (progress.totalFiles <= 0) return progress.status === 'manifest' ? 5 : 0;
+
+  return Math.min(100, Math.max(1, Math.round((progress.checkedFiles / progress.totalFiles) * 100)));
+}
+
 function toViewModel(game: GameManifest, installedGameIds: Set<string>): GameViewModel {
   const status: InstallationStatus = installedGameIds.has(game.id) ? 'installed' : 'available';
   const runner = game.launch.runner.toLowerCase();
@@ -370,6 +392,9 @@ function App() {
   }
 
   const secondaryActions = getSecondaryActions(selectedGame);
+  const activeUpdateProgress = updateProgress?.gameId === selectedGame.id ? updateProgress : null;
+  const updatePercent = getUpdatePercent(activeUpdateProgress);
+  const isRemoteUpdateRunning = pendingActionId === 'run-remote-update';
 
   async function handlePrimaryAction() {
     setActionError(null);
@@ -695,7 +720,7 @@ function App() {
                   <div className="mt-8 flex flex-wrap items-center gap-3">
                     <button
                       className="rounded-2xl bg-white px-8 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 shadow-[0_18px_60px_rgba(255,255,255,0.16)] transition hover:-translate-y-0.5 hover:bg-purple-100"
-                      disabled={isLaunching || pendingActionId === 'primary-install'}
+                      disabled={isLaunching || pendingActionId === 'primary-install' || isRemoteUpdateRunning}
                       onClick={() => void handlePrimaryAction()}
                       type="button"
                     >
@@ -714,6 +739,54 @@ function App() {
                       Ver detalhes
                     </button>
                   </div>
+
+                  {activeUpdateProgress && (
+                    <section className="mt-8 overflow-hidden rounded-[1.75rem] border border-sky-300/25 bg-slate-950/55 p-5 shadow-2xl shadow-sky-950/30 ring-1 ring-white/[0.06] backdrop-blur-xl">
+                      <div className="flex items-start justify-between gap-5">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-black uppercase tracking-[0.24em] text-sky-200">
+                            Atualizando {selectedGame.name}
+                          </p>
+                          <h3 className="mt-2 text-2xl font-black tracking-tight text-white">
+                            {activeUpdateProgress.message}
+                          </h3>
+                          <p className="mt-2 truncate text-sm font-semibold text-sky-100/75" title={activeUpdateProgress.currentFile ?? undefined}>
+                            {activeUpdateProgress.currentFile ?? 'Preparando lista de arquivos...'}
+                          </p>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="text-4xl font-black tracking-[-0.08em] text-white">
+                            {updatePercent}%
+                          </p>
+                          <span className="mt-2 inline-flex rounded-full bg-sky-300/10 px-3 py-1 text-[0.65rem] font-black uppercase tracking-[0.16em] text-sky-100 ring-1 ring-sky-200/20">
+                            {formatUpdateStatus(activeUpdateProgress.status)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 h-4 overflow-hidden rounded-full bg-black/35 p-1 ring-1 ring-white/[0.08]">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-sky-300 via-cyan-200 to-purple-300 shadow-[0_0_26px_rgba(125,211,252,0.45)] transition-all duration-500"
+                          style={{ width: `${updatePercent}%` }}
+                        />
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-3 gap-2 text-xs text-sky-50/80">
+                        <div className="rounded-2xl bg-white/[0.06] p-3 ring-1 ring-white/[0.06]">
+                          <p className="font-black text-white">{formatInteger(activeUpdateProgress.checkedFiles)} / {formatInteger(activeUpdateProgress.totalFiles)}</p>
+                          <p className="mt-1 text-sky-100/60">arquivos verificados</p>
+                        </div>
+                        <div className="rounded-2xl bg-white/[0.06] p-3 ring-1 ring-white/[0.06]">
+                          <p className="font-black text-white">{formatInteger(activeUpdateProgress.updatedFiles)}</p>
+                          <p className="mt-1 text-sky-100/60">baixados/aplicados</p>
+                        </div>
+                        <div className="rounded-2xl bg-white/[0.06] p-3 ring-1 ring-white/[0.06]">
+                          <p className="font-black text-white">{formatUpdateStatus(activeUpdateProgress.status)}</p>
+                          <p className="mt-1 text-sky-100/60">fase atual</p>
+                        </div>
+                      </div>
+                    </section>
+                  )}
                 </div>
               </article>
             </section>
@@ -757,43 +830,43 @@ function App() {
                 {secondaryActions.map((action) => (
                   <button
                     className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-sm font-semibold text-launcher-muted transition hover:bg-white/[0.065] hover:text-white"
-                    disabled={pendingActionId === action.id}
+                    disabled={pendingActionId !== null || isLaunching}
                     key={action.id}
                     onClick={() => void handleSecondaryAction(action)}
                     type="button"
                   >
-                    {pendingActionId === action.id ? 'Aguardando seleção...' : action.label}
+                    {pendingActionId === action.id
+                      ? action.id === 'run-remote-update'
+                        ? 'Atualizando arquivos...'
+                        : 'Processando...'
+                      : action.label}
                     <span className="text-white/25">›</span>
                   </button>
                 ))}
               </section>
 
-              {updateProgress && updateProgress.gameId === selectedGame.id && (
+              {activeUpdateProgress && (
                 <section className="rounded-[1.75rem] border border-sky-300/20 bg-sky-500/[0.08] p-5 text-sm text-sky-100">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-xs font-black uppercase tracking-[0.2em] text-sky-200">
                         Atualização
                       </p>
-                      <p className="mt-1 font-black">{updateProgress.message}</p>
+                      <p className="mt-1 font-black">{activeUpdateProgress.message}</p>
                     </div>
                     <span className="rounded-full bg-black/20 px-3 py-1 text-xs font-black uppercase tracking-[0.14em] ring-1 ring-white/10">
-                      {updateProgress.status}
+                      {formatUpdateStatus(activeUpdateProgress.status)}
                     </span>
                   </div>
                   <div className="mt-4 h-2 overflow-hidden rounded-full bg-black/25 ring-1 ring-white/[0.08]">
                     <div
-                      className="h-full rounded-full bg-sky-300 transition-all"
-                      style={{
-                        width: `${updateProgress.totalFiles > 0
-                          ? Math.min(100, Math.round((updateProgress.checkedFiles / updateProgress.totalFiles) * 100))
-                          : 8}%`,
-                      }}
+                      className="h-full rounded-full bg-gradient-to-r from-sky-300 to-purple-300 transition-all"
+                      style={{ width: `${updatePercent}%` }}
                     />
                   </div>
                   <p className="mt-3 text-xs leading-5 text-sky-100/80">
-                    {updateProgress.checkedFiles}/{updateProgress.totalFiles} verificados • {updateProgress.updatedFiles} baixados
-                    {updateProgress.currentFile ? ` • ${updateProgress.currentFile}` : ''}
+                    {formatInteger(activeUpdateProgress.checkedFiles)}/{formatInteger(activeUpdateProgress.totalFiles)} verificados • {formatInteger(activeUpdateProgress.updatedFiles)} baixados
+                    {activeUpdateProgress.currentFile ? ` • ${activeUpdateProgress.currentFile}` : ''}
                   </p>
                 </section>
               )}
