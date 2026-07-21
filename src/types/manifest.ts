@@ -31,6 +31,8 @@ export type LaunchConfig = {
   runner: string;
   executable: string | null;
   args: string[];
+  env?: Record<string, string>;
+  unsetEnv?: string[];
   battlEye?: BattlEyeConfig | null;
 };
 
@@ -38,6 +40,8 @@ export type BattlEyeConfig = {
   enabled?: boolean;
   executable: string;
   args?: string[];
+  installArgs?: string[];
+  installBeforeLaunch?: boolean;
   launchMode?: "beforeMain" | "main" | "replaceMain" | string;
   pathBase?: string;
   workingDir?: string;

@@ -27,6 +27,16 @@
     "runner": "proton",
     "executable": "launcher.exe",
     "args": [],
+    "env": {
+      "PROTONPATH": "~/.local/share/Steam/compatibilitytools.d/GE-Proton11-1",
+      "PROTON_BATTLEYE_RUNTIME": "~/.local/share/lutris/runtime/battleye_runtime",
+      "PROTON_EAC_RUNTIME": "~/.local/share/lutris/runtime/eac_runtime",
+      "WINEESYNC": "1",
+      "WINEFSYNC": "1",
+      "WINEARCH": "win64",
+      "WINEDEBUG": "-all"
+    },
+    "unsetEnv": ["GAMEID", "STORE"],
     "battlEye": {
       "enabled": true,
       "executable": "drive_c/Program Files (x86)/Tavernlight Games/RavenQuest/ravenquest_dx_BE.exe",

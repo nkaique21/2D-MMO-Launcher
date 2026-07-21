@@ -36,6 +36,7 @@ pub(crate) struct RunnerCommand {
     pub(crate) args: Vec<String>,
     pub(crate) working_dir: PathBuf,
     pub(crate) envs: Vec<(String, String)>,
+    pub(crate) unset_envs: Vec<String>,
 }
 
 fn path_is_executable(path: &Path) -> bool {
@@ -489,6 +490,7 @@ pub(crate) fn build_runner_command(
             args: launch_args.to_vec(),
             working_dir: install_path.to_path_buf(),
             envs: Vec::new(),
+            unset_envs: Vec::new(),
         }),
         "wine" => {
             let runner_path = runner.path.as_ref().ok_or_else(|| {
@@ -509,6 +511,7 @@ pub(crate) fn build_runner_command(
                 args,
                 working_dir: install_path.to_path_buf(),
                 envs: vec![("WINEPREFIX".to_string(), path_to_string(&prefix_dir))],
+                unset_envs: Vec::new(),
             })
         }
         "proton" => {
@@ -569,6 +572,7 @@ pub(crate) fn build_runner_command(
                 args,
                 working_dir: install_path.to_path_buf(),
                 envs,
+                unset_envs: Vec::new(),
             })
         }
         unsupported_runner => Err(format!(

@@ -383,6 +383,11 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - Foi adicionado `launch.battlEye.launchMode`, permitindo configurar se o BattlEye roda antes do executável principal ou se substitui o processo principal. Valores aceitos pelo backend para substituição: `main`, `replaceMain`, `replace-main`, `replace_main`.
 - O manifesto do RavenQuest agora usa `launch.battlEye.launchMode: "main"`, então `launch_game` e o auto-launch pós-instalação iniciam `ravenquest_dx_BE.exe` como entrada principal e pulam o spawn separado de `launcher.exe`. O log passa a registrar `main_executable_replaced_by_battl_eye=true`, `battl_eye_launch_mode=main` e `battl_eye_separate_spawn_skipped=main_launch_mode`.
 - Validações executadas após esse ajuste: `cargo check --manifest-path src-tauri/Cargo.toml` e `npm run build` passaram.
+- Teste manual posterior confirmou que o RavenQuest com BattlEye funciona no Linux quando iniciado via `umu-run` com ambiente equivalente ao Lutris: `PROTONPATH=~/.local/share/Steam/compatibilitytools.d/GE-Proton11-1`, `PROTON_BATTLEYE_RUNTIME=~/.local/share/lutris/runtime/battleye_runtime`, `PROTON_EAC_RUNTIME=~/.local/share/lutris/runtime/eac_runtime`, `WINEESYNC=1`, `WINEFSYNC=1`, `WINEARCH=win64`, `WINEDEBUG=-all`, e sem `GAMEID`/`STORE` definidos manualmente para o UMU usar `umu-default`.
+- O manifesto agora aceita `launch.env` e `launch.unsetEnv` opcionais, permitindo aplicar variáveis de ambiente e remover variáveis herdadas/configuradas pelo runner sem hardcode por jogo. Valores iniciados por `~/`, `$HOME/` ou `${HOME}/` são expandidos para o home do usuário no backend Rust.
+- `RunnerCommand` agora carrega `unset_envs`, e os spawns de jogo/BattlEye aplicam `envs` e depois `env_remove`. O `runner.log` registra `env.<KEY>=...` e `unset_env.<KEY>=true` para diagnóstico.
+- O manifesto do RavenQuest foi atualizado com o ambiente confirmado: `launch.env` declara `PROTONPATH`, runtimes BattlEye/EAC do Lutris e flags Wine; `launch.unsetEnv` remove `GAMEID` e `STORE`; o passo `installBeforeLaunch` com `installArgs: ["1", "0"]` foi removido porque não foi o método funcional.
+- Validações executadas após esse ajuste: `cargo check --manifest-path src-tauri/Cargo.toml` e `npm run build` passaram.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -402,8 +407,8 @@ Próximo passo recomendado para desenvolvimento:
    - Validar o botão `Baixar instalador Windows` do RavenQuest em ambiente com Proton/UMU disponível.
    - Se o instalador não abrir, consultar `logs/ravenquest/runner.log` no diretório de dados do app para analisar stdout/stderr do Wine/Proton.
    - Validar o auto-launch pós-instalação do RavenQuest (`launchAfterInstall`) após uma instalação limpa e após uma instalação reconciliada de prefixo antigo.
-   - Validar o RavenQuest em execução real com BattlEye e conferir no `runner.log` se aparecem `battl_eye_process_started=true` e o PID do processo auxiliar.
-   - Se o jogo ainda reclamar anti-cheat, conferir primeiro se o log registra `main_executable_replaced_by_battl_eye=true` e `battl_eye_launch_mode=main`. Depois testar reinstalação limpa no prefixo Proton e/ou ajustar o executável de validação para `ravenquest_dx.exe` conforme `BELauncher.ini`.
+   - Validar o RavenQuest em execução real com BattlEye e conferir no `runner.log` se aparecem `main_executable_replaced_by_battl_eye=true`, `battl_eye_launch_mode=main`, `env.PROTONPATH=...GE-Proton11-1`, `env.PROTON_BATTLEYE_RUNTIME=...battleye_runtime`, `unset_env.GAMEID=true` e `unset_env.STORE=true`.
+   - Se o jogo ainda reclamar anti-cheat, conferir se os runtimes do Lutris existem nos caminhos declarados no manifesto e se o runner resolvido é `system-umu-run`; depois avaliar tornar esses caminhos configuráveis por UI/SQLite.
    - Testar execução via Wine quando houver jogo/instalador Windows simples e Wine disponível.
    - Validar RavenQuest com Proton usando o prefixo gerenciado criado em `compat-data/ravenquest/proton`.
    - Persistir configurações avançadas de prefixo/runner no SQLite quando houver UI de configurações por jogo.

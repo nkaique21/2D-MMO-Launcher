@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -56,6 +56,10 @@ struct LaunchConfig {
     runner: String,
     executable: Option<String>,
     args: Vec<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(rename = "unsetEnv", default)]
+    unset_env: Vec<String>,
     #[serde(rename = "battlEye")]
     battl_eye: Option<BattlEyeConfig>,
 }
@@ -68,6 +72,10 @@ struct BattlEyeConfig {
     executable: String,
     #[serde(default)]
     args: Vec<String>,
+    #[serde(default)]
+    install_args: Vec<String>,
+    #[serde(default)]
+    install_before_launch: bool,
     launch_mode: Option<String>,
     path_base: Option<String>,
     working_dir: Option<String>,
@@ -299,6 +307,52 @@ fn configured_path_for_install(
         configured_base_path(app, game_id, install_path, base, default_runner)?
             .join(configured_path),
     )
+}
+
+fn expand_manifest_env_value(value: &str) -> String {
+    let Some(home_dir) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return value.to_string();
+    };
+    let home = home_dir.to_string_lossy();
+
+    if value == "~" || value == "$HOME" || value == "${HOME}" {
+        return home.to_string();
+    }
+
+    if let Some(rest) = value.strip_prefix("~/") {
+        return format!("{home}/{rest}");
+    }
+
+    if let Some(rest) = value.strip_prefix("$HOME/") {
+        return format!("{home}/{rest}");
+    }
+
+    if let Some(rest) = value.strip_prefix("${HOME}/") {
+        return format!("{home}/{rest}");
+    }
+
+    value.to_string()
+}
+
+fn apply_launch_environment(manifest: &GameManifest, command: &mut runners::RunnerCommand) {
+    for (key, value) in &manifest.launch.env {
+        command.envs.retain(|(existing_key, _)| existing_key != key);
+        command
+            .envs
+            .push((key.clone(), expand_manifest_env_value(value)));
+    }
+
+    for key in &manifest.launch.unset_env {
+        command.envs.retain(|(existing_key, _)| existing_key != key);
+
+        if !command
+            .unset_envs
+            .iter()
+            .any(|existing_key| existing_key == key)
+        {
+            command.unset_envs.push(key.clone());
+        }
+    }
 }
 
 fn is_windows_system_path(path: &Path) -> bool {
@@ -599,6 +653,31 @@ fn build_battl_eye_runner_command(
     resolved_runner: &runners::ResolvedRunner,
     install_path: &Path,
 ) -> Result<Option<runners::RunnerCommand>, String> {
+    build_battl_eye_runner_command_with_args(
+        app,
+        game_id,
+        manifest,
+        resolved_runner,
+        install_path,
+        None,
+        &manifest
+            .launch
+            .battl_eye
+            .as_ref()
+            .map(|battl_eye| battl_eye.args.as_slice())
+            .unwrap_or(&[]),
+    )
+}
+
+fn build_battl_eye_runner_command_with_args(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    manifest: &GameManifest,
+    resolved_runner: &runners::ResolvedRunner,
+    install_path: &Path,
+    log_prefix: Option<&str>,
+    args: &[String],
+) -> Result<Option<runners::RunnerCommand>, String> {
     let Some(battl_eye) = manifest.launch.battl_eye.as_ref() else {
         return Ok(None);
     };
@@ -648,32 +727,131 @@ fn build_battl_eye_runner_command(
         return Ok(None);
     }
 
-    let battl_eye_command = build_runner_command(
+    let mut battl_eye_command = build_runner_command(
         app,
         game_id,
         resolved_runner,
         &executable_path,
         &working_dir,
-        &battl_eye.args,
+        args,
         None,
     )?;
-    let launch_mode = battl_eye
-        .launch_mode
-        .as_deref()
-        .unwrap_or("beforeMain");
-    let mut command_log = vec![
-        "battl_eye_start=true".to_string(),
-        format!("battl_eye_launch_mode={launch_mode}"),
-    ];
+    apply_launch_environment(manifest, &mut battl_eye_command);
+    let launch_mode = battl_eye.launch_mode.as_deref().unwrap_or("beforeMain");
+    let prefix = log_prefix.unwrap_or("battl_eye");
+    let mut command_log = if log_prefix.is_some() {
+        vec![
+            format!("{prefix}_start=true"),
+            format!("{prefix}_launch_mode={launch_mode}"),
+        ]
+    } else {
+        vec![
+            "battl_eye_start=true".to_string(),
+            format!("battl_eye_launch_mode={launch_mode}"),
+        ]
+    };
 
     command_log.extend(
         format_runner_command_for_log(&battl_eye_command)
             .into_iter()
-            .map(|line| format!("battl_eye.{line}")),
+            .map(|line| format!("{prefix}.{line}")),
     );
     append_runner_log(app, game_id, &command_log)?;
 
     Ok(Some(battl_eye_command))
+}
+
+fn install_battl_eye_if_configured(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    manifest: &GameManifest,
+    resolved_runner: &runners::ResolvedRunner,
+    install_path: &Path,
+) -> Result<(), String> {
+    let Some(battl_eye) = manifest.launch.battl_eye.as_ref() else {
+        return Ok(());
+    };
+
+    if !battl_eye.enabled || !battl_eye.install_before_launch {
+        return Ok(());
+    }
+
+    if battl_eye.install_args.is_empty() {
+        append_runner_log(
+            app,
+            game_id,
+            &["battl_eye_install_skipped=no_install_args".to_string()],
+        )?;
+        return Ok(());
+    }
+
+    let Some(install_command) = build_battl_eye_runner_command_with_args(
+        app,
+        game_id,
+        manifest,
+        resolved_runner,
+        install_path,
+        Some("battl_eye_install"),
+        &battl_eye.install_args,
+    )?
+    else {
+        return Ok(());
+    };
+
+    let mut command = Command::new(&install_command.program);
+
+    command
+        .args(&install_command.args)
+        .current_dir(&install_command.working_dir);
+    apply_runner_command_environment(&mut command, &install_command);
+
+    let log_path = attach_process_logs(app, game_id, &mut command)?;
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Não foi possível preparar BattlEye para {} usando {}: {error}. Log: {}",
+            manifest.name,
+            install_command.program.display(),
+            log_path.display()
+        )
+    })?;
+    let process_id = child.id();
+
+    append_runner_log(
+        app,
+        game_id,
+        &[
+            "battl_eye_install_process_started=true".to_string(),
+            format!("battl_eye_install_process_pid={process_id}"),
+        ],
+    )?;
+
+    let status = child.wait().map_err(|error| {
+        format!(
+            "Não foi possível aguardar a preparação do BattlEye para {}: {error}. Log: {}",
+            manifest.name,
+            log_path.display()
+        )
+    })?;
+
+    append_runner_log(
+        app,
+        game_id,
+        &[
+            format!("battl_eye_install_process_pid={process_id}"),
+            format!("battl_eye_install_exit_status={status}"),
+            format!("battl_eye_install_exit_code={:?}", status.code()),
+        ],
+    )?;
+
+    if !status.success() && battl_eye.required {
+        return Err(format!(
+            "A preparação do BattlEye para {} falhou com status {status}. Log: {}",
+            manifest.name,
+            log_path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 fn build_game_runner_command(
@@ -694,18 +872,14 @@ fn build_game_runner_command(
             ],
         )?;
 
-        if let Some(battl_eye_command) = build_battl_eye_runner_command(
-            app,
-            game_id,
-            manifest,
-            resolved_runner,
-            install_path,
-        )? {
+        if let Some(battl_eye_command) =
+            build_battl_eye_runner_command(app, game_id, manifest, resolved_runner, install_path)?
+        {
             return Ok(battl_eye_command);
         }
     }
 
-    build_runner_command(
+    let mut runner_command = build_runner_command(
         app,
         game_id,
         resolved_runner,
@@ -713,7 +887,10 @@ fn build_game_runner_command(
         install_path,
         &manifest.launch.args,
         None,
-    )
+    )?;
+    apply_launch_environment(manifest, &mut runner_command);
+
+    Ok(runner_command)
 }
 
 fn spawn_battl_eye_if_configured(
@@ -732,13 +909,9 @@ fn spawn_battl_eye_if_configured(
         return Ok(());
     }
 
-    let Some(battl_eye_command) = build_battl_eye_runner_command(
-        app,
-        game_id,
-        manifest,
-        resolved_runner,
-        install_path,
-    )? else {
+    let Some(battl_eye_command) =
+        build_battl_eye_runner_command(app, game_id, manifest, resolved_runner, install_path)?
+    else {
         return Ok(());
     };
 
@@ -746,13 +919,8 @@ fn spawn_battl_eye_if_configured(
 
     command
         .args(&battl_eye_command.args)
-        .current_dir(&battl_eye_command.working_dir)
-        .envs(
-            battl_eye_command
-                .envs
-                .iter()
-                .map(|(key, value)| (key, value)),
-        );
+        .current_dir(&battl_eye_command.working_dir);
+    apply_runner_command_environment(&mut command, &battl_eye_command);
 
     let log_path = attach_process_logs(app, game_id, &mut command)?;
     let child = command.spawn().map_err(|error| {
@@ -837,6 +1005,8 @@ fn launch_install(
         ],
     )?;
 
+    install_battl_eye_if_configured(app, game_id, manifest, &resolved_runner, &install_path)?;
+
     let runner_command = build_game_runner_command(
         app,
         game_id,
@@ -856,8 +1026,8 @@ fn launch_install(
 
     command
         .args(&runner_command.args)
-        .current_dir(&runner_command.working_dir)
-        .envs(runner_command.envs.iter().map(|(key, value)| (key, value)));
+        .current_dir(&runner_command.working_dir);
+    apply_runner_command_environment(&mut command, &runner_command);
 
     let log_path = attach_process_logs(app, game_id, &mut command)?;
     let child = command.spawn().map_err(|error| {
@@ -1033,7 +1203,22 @@ fn format_runner_command_for_log(command: &runners::RunnerCommand) -> Vec<String
         lines.push(format!("env.{key}={value}"));
     }
 
+    for key in &command.unset_envs {
+        lines.push(format!("unset_env.{key}=true"));
+    }
+
     lines
+}
+
+fn apply_runner_command_environment(
+    command: &mut Command,
+    runner_command: &runners::RunnerCommand,
+) {
+    command.envs(runner_command.envs.iter().map(|(key, value)| (key, value)));
+
+    for key in &runner_command.unset_envs {
+        command.env_remove(key);
+    }
 }
 
 fn host_environment_for_log() -> Vec<String> {
@@ -1409,8 +1594,8 @@ fn download_and_run_installer(
 
     command
         .args(&runner_command.args)
-        .current_dir(&runner_command.working_dir)
-        .envs(runner_command.envs.iter().map(|(key, value)| (key, value)));
+        .current_dir(&runner_command.working_dir);
+    apply_runner_command_environment(&mut command, &runner_command);
 
     let log_path = attach_process_logs(&app, &game_id, &mut command)?;
 
@@ -1532,6 +1717,11 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         ],
     )?;
 
+    let install_path = PathBuf::from(&install.install_path);
+
+    install_battl_eye_if_configured(&app, &game_id, &manifest, &resolved_runner, &install_path)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
+
     let executable = manifest.launch.executable.as_ref().ok_or_else(|| {
         log_error_message(
             &app,
@@ -1542,8 +1732,6 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
             ),
         )
     })?;
-
-    let install_path = PathBuf::from(&install.install_path);
 
     if !install_path.exists() {
         return Err(log_error_message(
@@ -1593,8 +1781,8 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
 
     command
         .args(&runner_command.args)
-        .current_dir(&runner_command.working_dir)
-        .envs(runner_command.envs.iter().map(|(key, value)| (key, value)));
+        .current_dir(&runner_command.working_dir);
+    apply_runner_command_environment(&mut command, &runner_command);
 
     let log_path = attach_process_logs(&app, &game_id, &mut command)?;
 
