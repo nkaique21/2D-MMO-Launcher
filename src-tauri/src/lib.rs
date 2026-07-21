@@ -149,6 +149,8 @@ fn default_true() -> bool {
 const HTTP_TIMEOUT_SECONDS: u64 = 60;
 const REMOTE_UPDATE_PROGRESS_INTERVAL: usize = 100;
 const REMOTE_UPDATE_LOG_INTERVAL: usize = 1000;
+const DOWNLOAD_RETRY_ATTEMPTS: usize = 3;
+const DOWNLOAD_RETRY_DELAY_SECONDS: u64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1213,7 +1215,12 @@ fn read_recent_log_text(log_path: &Path, max_bytes: u64) -> Result<String, Strin
         .map_err(|error| format!("Não foi possível abrir log {}: {error}", log_path.display()))?;
     let len = file
         .metadata()
-        .map_err(|error| format!("Não foi possível inspecionar log {}: {error}", log_path.display()))?
+        .map_err(|error| {
+            format!(
+                "Não foi possível inspecionar log {}: {error}",
+                log_path.display()
+            )
+        })?
         .len();
     let start = len.saturating_sub(max_bytes);
     let mut bytes = Vec::new();
@@ -1226,7 +1233,13 @@ fn read_recent_log_text(log_path: &Path, max_bytes: u64) -> Result<String, Strin
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
-fn progress_message_from_log(status: &str, stage_label: &str, checked: usize, total: usize, current_file: Option<&str>) -> String {
+fn progress_message_from_log(
+    status: &str,
+    stage_label: &str,
+    checked: usize,
+    total: usize,
+    current_file: Option<&str>,
+) -> String {
     if status == "done" {
         return "Update concluído.".to_string();
     }
@@ -1307,7 +1320,9 @@ fn parse_latest_update_progress_from_log(
             }
             "checked_files" => checked_files = value.parse().unwrap_or(checked_files),
             "updated_files" => updated_files = value.parse().unwrap_or(updated_files),
-            "total_files" | "remote_file_count" => total_files = value.parse().unwrap_or(total_files),
+            "total_files" | "remote_file_count" => {
+                total_files = value.parse().unwrap_or(total_files)
+            }
             "current_file" => current_file = Some(value.to_string()),
             "update_target_dir" => target_dir = Some(value.to_string()),
             "error" => {
@@ -1462,9 +1477,28 @@ fn local_file_matches(path: &Path, expected: &RemoteFileEntry) -> Result<bool, S
 
 fn remote_file_url(base_url: &str, remote_path: &str) -> String {
     let base = base_url.trim_end_matches('/');
-    let path = remote_path.trim_start_matches('/');
+    let path = remote_path
+        .trim_start_matches('/')
+        .split('/')
+        .map(percent_encode_url_path_segment)
+        .collect::<Vec<_>>()
+        .join("/");
 
-    format!("{base}/{path}").replace(' ', "%20")
+    format!("{base}/{path}")
+}
+
+fn percent_encode_url_path_segment(segment: &str) -> String {
+    let mut encoded = String::new();
+
+    for byte in segment.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+
+    encoded
 }
 
 fn remote_update_target_dir(
@@ -1732,6 +1766,17 @@ fn run_remote_manifest_update(
     let mut updated_files = 0_usize;
     let mut skipped_files = 0_usize;
     let mut downloaded_bytes = 0_u64;
+    let download_client = http_client().map_err(|error| {
+        log_and_emit_update_error(
+            &app,
+            &game_id,
+            "downloadingFiles",
+            "Preparar cliente HTTP",
+            error,
+            Some(&attempt_log_path),
+            Some(&target_dir),
+        )
+    })?;
 
     remote_files.sort_by(|left, right| left.0.cmp(&right.0));
 
@@ -1833,7 +1878,13 @@ fn run_remote_manifest_update(
         let file_url = remote_file_url(&remote_manifest.url, &remote_path);
         let temporary_destination = destination.with_extension("download");
 
-        download_file(&file_url, &temporary_destination).map_err(|error| {
+        download_file_with_retry_using_client(
+            &download_client,
+            &file_url,
+            &temporary_destination,
+            Some((&app, &game_id, &remote_path)),
+        )
+        .map_err(|error| {
             log_and_emit_update_error(
                 &app,
                 &game_id,
@@ -2158,6 +2209,90 @@ fn filename_from_url(url: &str) -> String {
 }
 
 fn download_file(url: &str, destination: &PathBuf) -> Result<(), String> {
+    let client = http_client()?;
+
+    download_file_with_retry_using_client(&client, url, destination, None)
+}
+
+fn download_file_with_retry_using_client(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    destination: &PathBuf,
+    log_context: Option<(&tauri::AppHandle, &str, &str)>,
+) -> Result<(), String> {
+    let mut last_error = None;
+
+    for attempt in 1..=DOWNLOAD_RETRY_ATTEMPTS {
+        if let Some((app, game_id, remote_path)) = log_context {
+            let _ = append_runner_log(
+                app,
+                game_id,
+                &[
+                    "remote_update_download_attempt=true".to_string(),
+                    format!("download_attempt={attempt}"),
+                    format!("download_max_attempts={DOWNLOAD_RETRY_ATTEMPTS}"),
+                    format!("current_file={remote_path}"),
+                    format!("download_url={url}"),
+                ],
+            );
+        }
+
+        match download_file_once(client, url, destination) {
+            Ok(()) => {
+                if let Some((app, game_id, remote_path)) = log_context {
+                    let _ = append_runner_log(
+                        app,
+                        game_id,
+                        &[
+                            "remote_update_download_success=true".to_string(),
+                            format!("download_attempt={attempt}"),
+                            format!("current_file={remote_path}"),
+                        ],
+                    );
+                }
+
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = fs::remove_file(destination.with_extension("download"));
+                let _ = fs::remove_file(destination);
+
+                if let Some((app, game_id, remote_path)) = log_context {
+                    let _ = append_runner_log(
+                        app,
+                        game_id,
+                        &[
+                            "remote_update_download_attempt_failed=true".to_string(),
+                            format!("download_attempt={attempt}"),
+                            format!("download_max_attempts={DOWNLOAD_RETRY_ATTEMPTS}"),
+                            format!("current_file={remote_path}"),
+                            format!("download_error={error}"),
+                        ],
+                    );
+                }
+
+                last_error = Some(error);
+
+                if attempt < DOWNLOAD_RETRY_ATTEMPTS {
+                    thread::sleep(Duration::from_secs(
+                        DOWNLOAD_RETRY_DELAY_SECONDS * attempt as u64,
+                    ));
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Falha ao baixar {url} após {DOWNLOAD_RETRY_ATTEMPTS} tentativa(s): {}",
+        last_error.unwrap_or_else(|| "erro desconhecido".to_string())
+    ))
+}
+
+fn download_file_once(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    destination: &PathBuf,
+) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or_else(|| format!("Destino de download inválido: {}", destination.display()))?;
@@ -2169,7 +2304,6 @@ fn download_file(url: &str, destination: &PathBuf) -> Result<(), String> {
         )
     })?;
 
-    let client = http_client()?;
     let mut response = client
         .get(url)
         .send()
