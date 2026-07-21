@@ -34,13 +34,13 @@ Contexto atual: o launcher Tauri já consegue abrir o jogo corretamente. O próx
 ### Resultado implementado
 
 - O manifesto agora aceita `launch.battlEye` opcional. Sem esse bloco, os jogos continuam usando o fluxo antigo.
-- O RavenQuest declara BattlEye apontando para `drive_c/windows/system32/belauncher.exe`, com `workingDir` na pasta `RavenQuest/BattlEye`, ambos resolvidos a partir do prefixo Proton (`compatPrefix`).
+- O RavenQuest declara BattlEye apontando para `drive_c/Program Files (x86)/Tavernlight Games/RavenQuest/ravenquest_dx_BE.exe`, com `workingDir` na pasta `RavenQuest`, ambos resolvidos a partir do prefixo Proton (`compatPrefix`). O `belauncher.exe` de `system32` foi descartado como entrada principal porque encerra rapidamente sem abrir o jogo.
 - `launch_game` e o auto-launch pós-instalação suportam dois modos de BattlEye:
   - modo padrão/anterior: iniciar BattlEye antes do processo principal;
   - `launch.battlEye.launchMode: "main"`: iniciar o BattlEye como processo principal, sem abrir `launch.executable` em paralelo.
 - O backend registra no `runner.log` o comando, PID e erros do BattlEye para facilitar diagnóstico.
 - Validações executadas: `npm run build` e `cargo check --manifest-path src-tauri/Cargo.toml` passaram.
-- Diagnóstico do erro real “BattlEye service is not running”: o `BELauncher.ini` do RavenQuest declara `64BitExe=ravenquest_dx.exe`, então o fluxo mais provável é iniciar `belauncher.exe` como entrada principal. Não deve exigir reinstalação de início; primeiro testar com o launcher recompilado/reiniciado.
+- Diagnóstico do erro real “BattlEye service is not running”: o `BELauncher.ini` do RavenQuest declara `64BitExe=ravenquest_dx.exe`, e os scripts oficiais `Install_BattlEye.bat` chamam `..\\ravenquest_dx_BE.exe`. Portanto o fluxo mais provável é iniciar `ravenquest_dx_BE.exe` como entrada principal. Não deve exigir reinstalação de início; primeiro testar com o launcher recompilado/reiniciado.
 
 ### Próximos passos de teste real
 
