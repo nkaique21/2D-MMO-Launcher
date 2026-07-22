@@ -11,6 +11,13 @@
       {
         "type": "existing",
         "label": "Localizar instalação existente"
+      },
+      {
+        "type": "archive",
+        "label": "Baixar e instalar",
+        "url": "https://download.pokexgames.com/pxg-linux.zip",
+        "format": "zip",
+        "launchAfterInstall": true
       }
     ]
   },

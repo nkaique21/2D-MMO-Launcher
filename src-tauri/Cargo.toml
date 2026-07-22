@@ -22,3 +22,4 @@ rfd = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 flate2 = "1"
 crc32fast = "1"
+zip = "4"

@@ -55,6 +55,11 @@ struct InstallMethod {
     install_path: Option<String>,
     #[serde(rename = "launchAfterInstall")]
     launch_after_install: Option<bool>,
+    format: Option<String>,
+    #[serde(rename = "stripTopLevelDir", default)]
+    strip_top_level_dir: bool,
+    #[serde(default)]
+    headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1790,6 +1795,7 @@ fn download_planned_files_to_staging(
                             &planned_file.url,
                             &planned_file.staging_destination,
                             Some((&app, &game_id, &planned_file.remote_path)),
+                            None,
                         )
                     })
                     .and_then(|_| {
@@ -2709,7 +2715,7 @@ fn filename_from_url(url: &str) -> String {
 fn download_file(url: &str, destination: &PathBuf) -> Result<(), String> {
     let client = http_client()?;
 
-    download_file_with_retry_using_client(&client, url, destination, None)
+    download_file_with_retry_using_client(&client, url, destination, None, None)
 }
 
 fn download_file_with_retry_using_client(
@@ -2717,11 +2723,12 @@ fn download_file_with_retry_using_client(
     url: &str,
     destination: &PathBuf,
     log_context: Option<(&tauri::AppHandle, &str, &str)>,
+    headers: Option<&HashMap<String, String>>,
 ) -> Result<(), String> {
     let mut last_error = None;
 
     for attempt in 1..=DOWNLOAD_RETRY_ATTEMPTS {
-        match download_file_once(client, url, destination) {
+        match download_file_once(client, url, destination, headers) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 let _ = fs::remove_file(temporary_download_path(destination));
@@ -2772,6 +2779,7 @@ fn download_file_once(
     client: &reqwest::blocking::Client,
     url: &str,
     destination: &PathBuf,
+    headers: Option<&HashMap<String, String>>,
 ) -> Result<(), String> {
     let parent = destination
         .parent()
@@ -2784,8 +2792,15 @@ fn download_file_once(
         )
     })?;
 
-    let mut response = client
-        .get(url)
+    let mut request = client.get(url);
+
+    if let Some(headers) = headers {
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+    }
+
+    let mut response = request
         .send()
         .map_err(|error| format!("Não foi possível baixar {url}: {error}"))?
         .error_for_status()
@@ -2810,6 +2825,229 @@ fn download_file_once(
             destination.display()
         )
     })?;
+
+    Ok(())
+}
+
+fn extract_zip_archive(
+    archive_path: &Path,
+    destination: &Path,
+    strip_top_level_dir: bool,
+) -> Result<usize, String> {
+    let archive_file = fs::File::open(archive_path).map_err(|error| {
+        format!(
+            "Não foi possível abrir o arquivo ZIP {}: {error}",
+            archive_path.display()
+        )
+    })?;
+    let mut archive = zip::ZipArchive::new(archive_file).map_err(|error| {
+        format!(
+            "O arquivo baixado não é um ZIP válido ({}): {error}",
+            archive_path.display()
+        )
+    })?;
+    let mut extracted_files = 0_usize;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Não foi possível ler a entrada {index} do ZIP: {error}"))?;
+        let enclosed_path = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("O ZIP contém um caminho inseguro: {}", entry.name()))?;
+        let relative_path = if strip_top_level_dir {
+            let mut components = enclosed_path.components();
+            components.next();
+            components.as_path().to_path_buf()
+        } else {
+            enclosed_path.to_path_buf()
+        };
+
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        let output_path = destination.join(relative_path);
+
+        if entry.is_dir() {
+            fs::create_dir_all(&output_path).map_err(|error| {
+                format!(
+                    "Não foi possível criar diretório extraído {}: {error}",
+                    output_path.display()
+                )
+            })?;
+            continue;
+        }
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "Não foi possível criar diretório extraído {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let mut output = fs::File::create(&output_path).map_err(|error| {
+            format!(
+                "Não foi possível criar arquivo extraído {}: {error}",
+                output_path.display()
+            )
+        })?;
+        io::copy(&mut entry, &mut output).map_err(|error| {
+            format!(
+                "Não foi possível extrair {}: {error}",
+                output_path.display()
+            )
+        })?;
+
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&output_path, fs::Permissions::from_mode(mode)).map_err(
+                |error| {
+                    format!(
+                        "Não foi possível restaurar permissões de {}: {error}",
+                        output_path.display()
+                    )
+                },
+            )?;
+        }
+
+        extracted_files += 1;
+    }
+
+    Ok(extracted_files)
+}
+
+fn ensure_executable_permission(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let metadata = fs::metadata(path).map_err(|error| {
+            format!(
+                "Não foi possível inspecionar o executável {}: {error}",
+                path.display()
+            )
+        })?;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(permissions.mode() | 0o111);
+        fs::set_permissions(path, permissions).map_err(|error| {
+            format!(
+                "Não foi possível marcar {} como executável: {error}",
+                path.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn install_archive_files(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    manifest: &GameManifest,
+    method: &InstallMethod,
+    archive_path: &Path,
+    staging_dir: &Path,
+    target_dir: &Path,
+) -> Result<(), String> {
+    let archive_url = method
+        .url
+        .as_deref()
+        .ok_or_else(|| format!("O método archive de {} não define uma URL.", manifest.name))?;
+
+    emit_install_flow_progress(
+        app,
+        game_id,
+        "downloading",
+        "Baixando o arquivo do cliente Linux...",
+    );
+    let client = http_client()?;
+    download_file_with_retry_using_client(
+        &client,
+        archive_url,
+        &archive_path.to_path_buf(),
+        None,
+        Some(&method.headers),
+    )?;
+
+    emit_install_flow_progress(
+        app,
+        game_id,
+        "extracting",
+        "Download concluído. Extraindo os arquivos...",
+    );
+    remove_dir_if_exists(staging_dir)?;
+    fs::create_dir_all(staging_dir).map_err(|error| {
+        format!(
+            "Não foi possível preparar staging {}: {error}",
+            staging_dir.display()
+        )
+    })?;
+    let extracted_files =
+        extract_zip_archive(archive_path, staging_dir, method.strip_top_level_dir)?;
+    let executable = manifest.launch.executable.as_deref().ok_or_else(|| {
+        format!(
+            "O manifesto de {} não define launch.executable.",
+            manifest.name
+        )
+    })?;
+    let staged_executable = command_path_for_install(staging_dir, executable);
+
+    if !staged_executable.is_file() {
+        return Err(format!(
+            "O ZIP de {} foi extraído, mas o executável esperado não foi encontrado: {}",
+            manifest.name,
+            staged_executable.display()
+        ));
+    }
+
+    emit_install_flow_progress(
+        app,
+        game_id,
+        "preparing",
+        "Preparando o executável do jogo...",
+    );
+    ensure_executable_permission(&staged_executable)?;
+
+    if target_dir.exists() {
+        remove_dir_if_exists(target_dir)?;
+    }
+    if let Some(parent) = target_dir.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Não foi possível preparar a pasta de jogos {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::rename(staging_dir, target_dir).map_err(|error| {
+        format!(
+            "Não foi possível finalizar a instalação em {}: {error}",
+            target_dir.display()
+        )
+    })?;
+
+    append_runner_log(
+        app,
+        game_id,
+        &[
+            "archive_install_completed=true".to_string(),
+            format!("archive_url={archive_url}"),
+            format!("archive_path={}", archive_path.display()),
+            format!("archive_format={:?}", method.format),
+            format!("archive_strip_top_level_dir={}", method.strip_top_level_dir),
+            format!("archive_extracted_files={extracted_files}"),
+            format!("archive_install_path={}", target_dir.display()),
+            format!(
+                "archive_executable={}",
+                command_path_for_install(target_dir, executable).display()
+            ),
+        ],
+    )?;
 
     Ok(())
 }
@@ -3481,6 +3719,109 @@ fn download_and_run_installer(
 }
 
 #[tauri::command]
+async fn download_and_install_archive(
+    app: tauri::AppHandle,
+    game_id: String,
+) -> Result<LaunchResult, String> {
+    let game_id = game_id.trim().to_string();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    let manifest = get_manifest(&game_id)?;
+    let method = manifest
+        .installation
+        .methods
+        .iter()
+        .find(|method| method.kind == "archive")
+        .cloned()
+        .ok_or_else(|| format!("{} não possui método archive no manifesto.", manifest.name))?;
+
+    if !matches!(method.format.as_deref(), None | Some("zip")) {
+        return Err(format!(
+            "Formato de arquivo não suportado para {}: {:?}",
+            manifest.name, method.format
+        ));
+    }
+
+    let archive_url = method
+        .url
+        .as_deref()
+        .ok_or_else(|| format!("O método archive de {} não define uma URL.", manifest.name))?;
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        format!("Não foi possível resolver o diretório de dados do app: {error}")
+    })?;
+    let safe_game_id = sanitize_path_segment(&game_id);
+    let archive_path = app_data_dir
+        .join("downloads")
+        .join(&safe_game_id)
+        .join(filename_from_url(archive_url));
+    let staging_dir = app_data_dir.join("install-staging").join(&safe_game_id);
+    let target_dir = app_data_dir.join("games").join(&safe_game_id);
+
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            "action=download_and_install_archive".to_string(),
+            format!("game_id={game_id}"),
+            format!("archive_url={archive_url}"),
+            format!("archive_target_dir={}", target_dir.display()),
+        ],
+    )?;
+    emit_install_flow_progress(
+        &app,
+        &game_id,
+        "preparing",
+        "Preparando instalação do arquivo...",
+    );
+
+    let worker_app = app.clone();
+    let worker_game_id = game_id.clone();
+    let worker_manifest = manifest.clone();
+    let worker_method = method.clone();
+    let worker_archive_path = archive_path.clone();
+    let worker_staging_dir = staging_dir.clone();
+    let worker_target_dir = target_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        install_archive_files(
+            &worker_app,
+            &worker_game_id,
+            &worker_manifest,
+            &worker_method,
+            &worker_archive_path,
+            &worker_staging_dir,
+            &worker_target_dir,
+        )
+    })
+    .await
+    .map_err(|error| format!("A tarefa de instalação do ZIP falhou: {error}"))??;
+
+    let connection = open_database(&app)?;
+    let install = save_install(&connection, &game_id, &target_dir.to_string_lossy(), None)?;
+    emit_install_updated(&app, &install);
+    emit_install_flow_progress(
+        &app,
+        &game_id,
+        "launching",
+        "Instalação concluída. Iniciando o jogo...",
+    );
+
+    let result = launch_install(
+        &app,
+        &game_id,
+        &manifest,
+        &install,
+        "action=launch_after_archive_install",
+    )?;
+
+    emit_install_flow_progress(&app, &game_id, "done", "Jogo instalado e iniciado.");
+
+    Ok(result)
+}
+
+#[tauri::command]
 fn run_game_update(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, String> {
     let game_id = game_id.trim().to_string();
 
@@ -4047,6 +4388,7 @@ pub fn run() {
             list_runners,
             locate_existing_install,
             download_and_run_installer,
+            download_and_install_archive,
             run_game_update,
             get_game_update_progress,
             install_game_from_remote_manifest,

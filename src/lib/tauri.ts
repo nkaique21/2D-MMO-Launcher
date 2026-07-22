@@ -21,6 +21,10 @@ export function downloadAndRunInstaller(gameId: string) {
   return invoke<LaunchResult>('download_and_run_installer', { gameId });
 }
 
+export function downloadAndInstallArchive(gameId: string) {
+  return invoke<LaunchResult>('download_and_install_archive', { gameId });
+}
+
 export function runGameUpdate(gameId: string) {
   return invoke<LaunchResult>('run_game_update', { gameId });
 }

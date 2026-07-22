@@ -25,6 +25,9 @@ export type InstallMethod = {
   compatPrefix?: string;
   installPath?: string;
   launchAfterInstall?: boolean;
+  format?: string;
+  stripTopLevelDir?: boolean;
+  headers?: Record<string, string>;
 };
 
 export type LaunchConfig = {

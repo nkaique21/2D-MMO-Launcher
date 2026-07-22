@@ -4,6 +4,7 @@ import {
   listGames,
   listInstalls,
   listRunners,
+  downloadAndInstallArchive,
   downloadAndRunInstaller,
   launchGame,
   locateExistingInstall,
@@ -617,6 +618,30 @@ function App() {
         return;
       }
 
+      const archiveMethod = selectedGame.installation.methods.find(
+        (method) => method.type === 'archive',
+      );
+
+      if (archiveMethod) {
+        setPendingActionId('primary-install');
+        setInstallFlow({ gameId: selectedGame.id, status: 'preparing', message: 'Preparando instalação do arquivo...' });
+        setActionMessage('Preparando download do cliente Linux...');
+
+        try {
+          const result = await downloadAndInstallArchive(selectedGame.id);
+          setInstalls(await listInstalls());
+          setActionMessage(formatLaunchMessage('Jogo instalado e iniciado', result));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setActionError(message);
+          setInstallFlow({ gameId: selectedGame.id, status: 'error', message });
+        } finally {
+          setPendingActionId(null);
+        }
+
+        return;
+      }
+
       const windowsInstallerMethod = selectedGame.installation.methods.find(
         (method) => method.type === 'windowsInstaller',
       );
@@ -701,6 +726,22 @@ function App() {
 
         setInstalls(refreshedInstalls);
         setActionMessage(formatLaunchMessage('Instalador baixado e iniciado', result));
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPendingActionId(null);
+      }
+
+      return;
+    }
+
+    if (action.type === 'installMethod' && action.installMethodType === 'archive') {
+      setPendingActionId(action.id);
+
+      try {
+        const result = await downloadAndInstallArchive(selectedGame.id);
+        setInstalls(await listInstalls());
+        setActionMessage(formatLaunchMessage('Jogo instalado e iniciado', result));
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       } finally {

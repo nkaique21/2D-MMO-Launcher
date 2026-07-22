@@ -11,6 +11,17 @@
       {
         "type": "existing",
         "label": "Localizar instalação existente"
+      },
+      {
+        "type": "archive",
+        "label": "Baixar e instalar",
+        "url": "https://download.grandlineadventures.com/glaclient.zip",
+        "format": "zip",
+        "launchAfterInstall": true,
+        "headers": {
+          "User-Agent": "Mozilla/5.0",
+          "Referer": "https://grandlineadventures.com/en/"
+        }
       }
     ]
   },
