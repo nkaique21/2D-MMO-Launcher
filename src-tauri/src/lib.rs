@@ -8,8 +8,8 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc, Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+    mpsc, Arc,
 };
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1642,10 +1642,9 @@ fn download_planned_files_to_staging(
     }
 
     let worker_count = concurrency.min(planned_files.len()).max(1);
-    let (task_tx, task_rx) = mpsc::channel::<RemotePlannedFile>();
     let (result_tx, result_rx) = mpsc::channel::<Result<(String, u64), String>>();
-    let task_rx = Arc::new(Mutex::new(task_rx));
-    let cancel_downloads = Arc::new(AtomicBool::new(false));
+    let planned_files = Arc::new(planned_files.to_vec());
+    let next_file_index = Arc::new(AtomicUsize::new(0));
     let mut workers = Vec::with_capacity(worker_count);
 
     append_runner_log(
@@ -1658,12 +1657,31 @@ fn download_planned_files_to_staging(
         ],
     )?;
 
-    for _ in 0..worker_count {
-        let task_rx = Arc::clone(&task_rx);
+    emit_update_progress_detail(
+        app,
+        game_id,
+        "downloading",
+        Some("downloadingFiles"),
+        Some("Baixar arquivos divergentes"),
+        0,
+        0,
+        planned_files.len(),
+        None,
+        format!(
+            "Baixando em paralelo com {worker_count} worker(s): 0 de {} arquivos...",
+            planned_files.len()
+        ),
+        Some(target_dir),
+        Some(attempt_log_path),
+        None,
+    );
+
+    for worker_index in 0..worker_count {
+        let planned_files = Arc::clone(&planned_files);
+        let next_file_index = Arc::clone(&next_file_index);
         let result_tx = result_tx.clone();
         let app = app.clone();
         let game_id = game_id.to_string();
-        let cancel_downloads = Arc::clone(&cancel_downloads);
 
         workers.push(thread::spawn(move || {
             let client = match http_client() {
@@ -1675,28 +1693,10 @@ fn download_planned_files_to_staging(
             };
 
             loop {
-                if cancel_downloads.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let planned_file = match task_rx.lock() {
-                    Ok(receiver) => receiver.recv(),
-                    Err(error) => {
-                        cancel_downloads.store(true, Ordering::Relaxed);
-                        let _ = result_tx.send(Err(format!(
-                            "Fila de downloads ficou indisponível: {error}"
-                        )));
-                        return;
-                    }
-                };
-
-                let Ok(planned_file) = planned_file else {
+                let planned_file_index = next_file_index.fetch_add(1, Ordering::Relaxed);
+                let Some(planned_file) = planned_files.get(planned_file_index).cloned() else {
                     break;
                 };
-
-                if cancel_downloads.load(Ordering::Relaxed) {
-                    break;
-                }
 
                 let result = download_file_with_retry_using_client(
                     &client,
@@ -1727,30 +1727,28 @@ fn download_planned_files_to_staging(
                         })
                 });
 
-                if result.is_err() {
-                    cancel_downloads.store(true, Ordering::Relaxed);
-                }
-
-                let should_stop = result.is_err();
-                let _ = result_tx.send(result);
-
+                let should_stop = result_tx.send(result).is_err();
                 if should_stop {
                     break;
                 }
             }
+
+            let _ = append_runner_log(
+                &app,
+                &game_id,
+                &[
+                    "remote_update_download_worker_finished=true".to_string(),
+                    format!("remote_update_download_worker_index={worker_index}"),
+                ],
+            );
         }));
     }
 
-    for planned_file in planned_files.iter().cloned() {
-        task_tx.send(planned_file).map_err(|error| {
-            format!("Não foi possível enfileirar arquivo para download: {error}")
-        })?;
-    }
-    drop(task_tx);
     drop(result_tx);
 
     let mut downloaded_files = 0_usize;
     let mut downloaded_bytes = 0_u64;
+    let mut download_errors = Vec::new();
 
     for result in result_rx {
         match result {
@@ -1803,13 +1801,7 @@ fn download_planned_files_to_staging(
                 }
             }
             Err(error) => {
-                cancel_downloads.store(true, Ordering::Relaxed);
-
-                for worker in workers {
-                    let _ = worker.join();
-                }
-
-                return Err(error);
+                download_errors.push(error);
             }
         }
     }
@@ -1818,6 +1810,28 @@ fn download_planned_files_to_staging(
         worker
             .join()
             .map_err(|_| "Worker de download encerrou com panic.".to_string())?;
+    }
+
+    if !download_errors.is_empty() {
+        let error_count = download_errors.len();
+        let first_error = download_errors
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "erro desconhecido".to_string());
+
+        append_runner_log(
+            app,
+            game_id,
+            &[
+                "remote_update_download_errors=true".to_string(),
+                format!("remote_update_download_error_count={error_count}"),
+                format!("remote_update_first_download_error={first_error}"),
+            ],
+        )?;
+
+        return Err(format!(
+            "Falha ao baixar/validar {error_count} arquivo(s). Primeiro erro: {first_error}"
+        ));
     }
 
     Ok(downloaded_bytes)
