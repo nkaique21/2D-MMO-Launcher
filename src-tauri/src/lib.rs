@@ -7,7 +7,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
@@ -161,7 +164,7 @@ fn default_true() -> bool {
 const HTTP_TIMEOUT_SECONDS: u64 = 60;
 const REMOTE_UPDATE_PROGRESS_INTERVAL: usize = 100;
 const REMOTE_UPDATE_LOG_INTERVAL: usize = 1000;
-const REMOTE_UPDATE_DOWNLOAD_PROGRESS_INTERVAL: usize = 25;
+const REMOTE_UPDATE_DOWNLOAD_PROGRESS_INTERVAL: usize = 1;
 const REMOTE_UPDATE_APPLY_PROGRESS_INTERVAL: usize = 50;
 const DOWNLOAD_RETRY_ATTEMPTS: usize = 3;
 const DOWNLOAD_RETRY_DELAY_SECONDS: u64 = 2;
@@ -1642,6 +1645,7 @@ fn download_planned_files_to_staging(
     let (task_tx, task_rx) = mpsc::channel::<RemotePlannedFile>();
     let (result_tx, result_rx) = mpsc::channel::<Result<(String, u64), String>>();
     let task_rx = Arc::new(Mutex::new(task_rx));
+    let cancel_downloads = Arc::new(AtomicBool::new(false));
     let mut workers = Vec::with_capacity(worker_count);
 
     append_runner_log(
@@ -1659,6 +1663,7 @@ fn download_planned_files_to_staging(
         let result_tx = result_tx.clone();
         let app = app.clone();
         let game_id = game_id.to_string();
+        let cancel_downloads = Arc::clone(&cancel_downloads);
 
         workers.push(thread::spawn(move || {
             let client = match http_client() {
@@ -1670,9 +1675,14 @@ fn download_planned_files_to_staging(
             };
 
             loop {
+                if cancel_downloads.load(Ordering::Relaxed) {
+                    break;
+                }
+
                 let planned_file = match task_rx.lock() {
                     Ok(receiver) => receiver.recv(),
                     Err(error) => {
+                        cancel_downloads.store(true, Ordering::Relaxed);
                         let _ = result_tx.send(Err(format!(
                             "Fila de downloads ficou indisponível: {error}"
                         )));
@@ -1683,6 +1693,10 @@ fn download_planned_files_to_staging(
                 let Ok(planned_file) = planned_file else {
                     break;
                 };
+
+                if cancel_downloads.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 let result = download_file_with_retry_using_client(
                     &client,
@@ -1713,7 +1727,16 @@ fn download_planned_files_to_staging(
                         })
                 });
 
+                if result.is_err() {
+                    cancel_downloads.store(true, Ordering::Relaxed);
+                }
+
+                let should_stop = result.is_err();
                 let _ = result_tx.send(result);
+
+                if should_stop {
+                    break;
+                }
             }
         }));
     }
@@ -1780,6 +1803,8 @@ fn download_planned_files_to_staging(
                 }
             }
             Err(error) => {
+                cancel_downloads.store(true, Ordering::Relaxed);
+
                 for worker in workers {
                     let _ = worker.join();
                 }
