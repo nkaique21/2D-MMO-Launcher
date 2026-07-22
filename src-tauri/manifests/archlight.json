@@ -11,12 +11,19 @@
       {
         "type": "existing",
         "label": "Localizar instalação existente"
+      },
+      {
+        "type": "archive",
+        "label": "Baixar e instalar",
+        "url": "https://dw.archlightonline.com/abaldar.zip",
+        "format": "zip",
+        "launchAfterInstall": true
       }
     ]
   },
   "launch": {
     "runner": "proton",
-    "executable": null,
+    "executable": "abaldar.exe",
     "args": []
   },
   "update": {
