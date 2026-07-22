@@ -15,9 +15,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 mod database;
+mod managed_runners;
 mod runners;
 
 use database::{GameInstall, GameSettings};
+use managed_runners::{
+    get_latest_proton_ge_release, install_latest_proton_ge, remove_managed_runner,
+};
 use runners::{build_runner_command, list_runners, managed_windows_prefix_dir, resolve_runner};
 use rusqlite::Connection;
 
@@ -4816,6 +4820,9 @@ pub fn run() {
             save_game_settings,
             reset_game_settings,
             list_runners,
+            get_latest_proton_ge_release,
+            install_latest_proton_ge,
+            remove_managed_runner,
             locate_existing_install,
             download_and_run_installer,
             download_and_install_archive,

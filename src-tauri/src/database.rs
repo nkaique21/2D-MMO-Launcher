@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 use tauri::Manager;
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +25,21 @@ pub(crate) struct GameSettings {
     pub(crate) env_overrides: HashMap<String, String>,
     pub(crate) created_at: Option<String>,
     pub(crate) updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedRunner {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) version: String,
+    pub(crate) label: String,
+    pub(crate) source: String,
+    pub(crate) install_path: String,
+    pub(crate) executable_path: String,
+    pub(crate) status: String,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
 }
 
 pub(crate) fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
@@ -135,7 +150,138 @@ const MIGRATIONS: &[Migration] = &[
             );
         ",
     },
+    Migration {
+        version: 3,
+        name: "create_runners",
+        sql: "
+            CREATE TABLE IF NOT EXISTS runners (
+                id TEXT PRIMARY KEY NOT NULL,
+                kind TEXT NOT NULL,
+                version TEXT NOT NULL,
+                label TEXT NOT NULL,
+                source TEXT NOT NULL,
+                install_path TEXT NOT NULL,
+                executable_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'available',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS runners_kind_status_idx
+                ON runners (kind, status);
+        ",
+    },
 ];
+
+pub(crate) fn list_managed_runners(connection: &Connection) -> Result<Vec<ManagedRunner>, String> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT id, kind, version, label, source, install_path, executable_path,
+                   status, created_at, updated_at
+            FROM runners
+            ORDER BY created_at DESC, id ASC
+            ",
+        )
+        .map_err(|error| format!("Não foi possível consultar runners gerenciados: {error}"))?;
+
+    let runners = statement
+        .query_map([], managed_runner_from_row)
+        .map_err(|error| format!("Não foi possível ler runners gerenciados: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Registro de runner gerenciado inválido: {error}"))?;
+
+    Ok(runners)
+}
+
+pub(crate) fn get_managed_runner(
+    connection: &Connection,
+    runner_id: &str,
+) -> Result<Option<ManagedRunner>, String> {
+    let result = connection.query_row(
+        "
+        SELECT id, kind, version, label, source, install_path, executable_path,
+               status, created_at, updated_at
+        FROM runners
+        WHERE id = ?1
+        ",
+        params![runner_id],
+        managed_runner_from_row,
+    );
+
+    match result {
+        Ok(runner) => Ok(Some(runner)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(format!(
+            "Não foi possível carregar o runner gerenciado {runner_id}: {error}"
+        )),
+    }
+}
+
+pub(crate) fn save_managed_runner(
+    connection: &Connection,
+    runner: &ManagedRunner,
+) -> Result<ManagedRunner, String> {
+    connection
+        .execute(
+            "
+            INSERT INTO runners (
+                id, kind, version, label, source, install_path, executable_path, status
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(id) DO UPDATE SET
+                kind = excluded.kind,
+                version = excluded.version,
+                label = excluded.label,
+                source = excluded.source,
+                install_path = excluded.install_path,
+                executable_path = excluded.executable_path,
+                status = excluded.status,
+                updated_at = CURRENT_TIMESTAMP
+            ",
+            params![
+                runner.id,
+                runner.kind,
+                runner.version,
+                runner.label,
+                runner.source,
+                runner.install_path,
+                runner.executable_path,
+                runner.status,
+            ],
+        )
+        .map_err(|error| format!("Não foi possível salvar runner gerenciado: {error}"))?;
+
+    get_managed_runner(connection, &runner.id)?.ok_or_else(|| {
+        format!(
+            "O runner gerenciado {} não foi encontrado após a persistência.",
+            runner.id
+        )
+    })
+}
+
+pub(crate) fn remove_managed_runner(
+    connection: &Connection,
+    runner_id: &str,
+) -> Result<bool, String> {
+    connection
+        .execute("DELETE FROM runners WHERE id = ?1", params![runner_id])
+        .map(|removed_rows| removed_rows > 0)
+        .map_err(|error| format!("Não foi possível remover runner gerenciado: {error}"))
+}
+
+fn managed_runner_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManagedRunner> {
+    Ok(ManagedRunner {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        version: row.get(2)?,
+        label: row.get(3)?,
+        source: row.get(4)?,
+        install_path: row.get(5)?,
+        executable_path: row.get(6)?,
+        status: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
 
 pub(crate) fn list_installs(connection: &Connection) -> Result<Vec<GameInstall>, String> {
     let mut statement = connection
@@ -311,6 +457,7 @@ mod tests {
         assert_eq!(schema_version(&connection).unwrap(), CURRENT_SCHEMA_VERSION);
         assert!(table_exists(&connection, "installs"));
         assert!(table_exists(&connection, "game_settings"));
+        assert!(table_exists(&connection, "runners"));
     }
 
     #[test]
@@ -353,6 +500,32 @@ mod tests {
         assert!(reset.runner_override.is_none());
         assert!(reset.env_overrides.is_empty());
         assert!(reset.created_at.is_none());
+    }
+
+    #[test]
+    fn persists_lists_and_removes_managed_runner() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        migrate(&mut connection).unwrap();
+        let runner = ManagedRunner {
+            id: "managed-proton-ge-test".to_string(),
+            kind: "proton".to_string(),
+            version: "GE-Proton-Test".to_string(),
+            label: "GE-Proton-Test".to_string(),
+            source: "Launcher".to_string(),
+            install_path: "/tmp/runners/proton-ge/GE-Proton-Test".to_string(),
+            executable_path: "/tmp/runners/proton-ge/GE-Proton-Test/proton".to_string(),
+            status: "available".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let saved = save_managed_runner(&connection, &runner).expect("save managed runner");
+        assert_eq!(saved.version, "GE-Proton-Test");
+        assert_eq!(list_managed_runners(&connection).unwrap().len(), 1);
+        assert!(remove_managed_runner(&connection, &runner.id).unwrap());
+        assert!(get_managed_runner(&connection, &runner.id)
+            .unwrap()
+            .is_none());
     }
 
     fn table_exists(connection: &Connection, table: &str) -> bool {

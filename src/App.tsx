@@ -4,6 +4,9 @@ import {
   listGames,
   listInstalls,
   listRunners,
+  getLatestProtonGeRelease,
+  installLatestProtonGe,
+  removeManagedRunner,
   downloadAndInstallArchive,
   downloadAndRunInstaller,
   launchGame,
@@ -19,7 +22,7 @@ import {
   saveGameSettings,
   verifyGameInstall,
 } from './lib/tauri';
-import type { GameInstall, GameManifest, GameSettings, GameUpdateProgress, InstallVerificationResult, RunnerInfo } from './types/manifest';
+import type { GameInstall, GameManifest, GameSettings, GameUpdateProgress, InstallVerificationResult, ManagedRunnerRelease, RunnerInfo, RunnerInstallProgress } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
 
@@ -333,7 +336,59 @@ function App() {
   const [gameSettings, setGameSettings] = useState<GameSettings | null>(null);
   const [settingsRunner, setSettingsRunner] = useState('');
   const [settingsEnv, setSettingsEnv] = useState<Record<string, string>>({});
+  const [runnerRelease, setRunnerRelease] = useState<ManagedRunnerRelease | null>(null);
+  const [runnerProgress, setRunnerProgress] = useState<RunnerInstallProgress | null>(null);
+  const [runnerActionId, setRunnerActionId] = useState<string | null>(null);
   const [reloadSignal, setReloadSignal] = useState(0);
+
+  async function refreshRunnerCatalog() {
+    setRunnerActionId('catalog');
+
+    try {
+      const release = await getLatestProtonGeRelease();
+      setRunnerRelease(release);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRunnerActionId(null);
+    }
+  }
+
+  async function installProtonGe() {
+    setRunnerActionId('install');
+    setActionError(null);
+    setRunnerProgress({ status: 'preparing', stage: 'catalog', version: runnerRelease?.version ?? '', downloadedBytes: 0, totalBytes: runnerRelease?.size ?? 0, message: 'Preparando instalação do Proton-GE...', error: null });
+
+    try {
+      const installed = await installLatestProtonGe();
+      const [detectedRunners, release] = await Promise.all([listRunners(), getLatestProtonGeRelease()]);
+      setRunners(detectedRunners);
+      setRunnerRelease(release);
+      setActionMessage(`${installed.label} instalado e disponível nas configurações por jogo.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRunnerActionId(null);
+    }
+  }
+
+  async function uninstallManagedRunner(runner: RunnerInfo) {
+    if (!window.confirm(`Remover ${runner.label} do launcher? Jogos configurados com este ID precisarão escolher outro runner.`)) return;
+    setRunnerActionId(`remove:${runner.id}`);
+    setActionError(null);
+
+    try {
+      await removeManagedRunner(runner.id);
+      const detectedRunners = await listRunners();
+      setRunners(detectedRunners);
+      setRunnerRelease((current) => current?.runnerId === runner.id ? { ...current, installed: false } : current);
+      setActionMessage(`${runner.label} removido do launcher.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRunnerActionId(null);
+    }
+  }
 
   async function openGameSettings() {
     setPendingActionId('load-settings');
@@ -446,6 +501,18 @@ function App() {
         return [...otherInstalls, event.payload];
       });
       setSelectedGameId(event.payload.gameId);
+    });
+
+    return () => {
+      isMounted = false;
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const unlistenPromise = listen<RunnerInstallProgress>('runner-install-progress', (event) => {
+      if (isMounted) setRunnerProgress(event.payload);
     });
 
     return () => {
@@ -586,6 +653,10 @@ function App() {
     () => runners.filter((runner) => runner.installable || runner.status === 'installable'),
     [runners],
   );
+  const managedRunners = useMemo(() => runners.filter((runner) => runner.managed), [runners]);
+  const runnerInstallPercent = runnerProgress && runnerProgress.totalBytes > 0
+    ? Math.min(100, Math.round((runnerProgress.downloadedBytes / runnerProgress.totalBytes) * 100))
+    : 0;
 
   const selectedGame = useMemo(
     () => games.find((game) => game.id === selectedGameId) ?? games[0] ?? null,
@@ -1335,6 +1406,21 @@ function App() {
                   </button>
                 ))}
               </div>
+            </section>
+            <section className="mt-5 rounded-2xl border border-violet-300/15 bg-violet-500/[0.05] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-200">Runners gerenciados</p><p className="mt-1 text-xs leading-5 text-white/50">Instale Proton-GE sem sair do launcher.</p></div>
+                <button className="text-xs font-bold text-violet-200/70 hover:text-violet-100 disabled:opacity-40" disabled={runnerActionId !== null} onClick={() => void refreshRunnerCatalog()} type="button">{runnerActionId === 'catalog' ? 'Consultando...' : 'Consultar'}</button>
+              </div>
+              {runnerRelease ? (
+                <div className="mt-3 rounded-xl bg-black/20 p-3 ring-1 ring-white/[0.06]">
+                  <div className="flex items-center justify-between gap-3"><div className="min-w-0"><strong className="block truncate text-sm">{runnerRelease.version}</strong><span className="text-[0.68rem] text-white/40">{formatBytes(runnerRelease.size)} • release mais recente</span></div><button className="shrink-0 rounded-lg bg-violet-200 px-3 py-2 text-[0.68rem] font-black text-slate-950 disabled:opacity-45" disabled={runnerActionId !== null || runnerRelease.installed} onClick={() => void installProtonGe()} type="button">{runnerActionId === 'install' ? 'Instalando...' : runnerRelease.installed ? 'Instalado' : 'Instalar'}</button></div>
+                </div>
+              ) : <button className="mt-3 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-xs font-bold text-white/60 hover:bg-white/[0.07]" disabled={runnerActionId !== null} onClick={() => void refreshRunnerCatalog()} type="button">Ver Proton-GE mais recente</button>}
+              {runnerProgress && (runnerActionId === 'install' || runnerProgress.status === 'error') && (
+                <div className="mt-3 text-xs text-white/55"><div className="mb-2 flex justify-between gap-3"><span>{runnerProgress.message}</span><strong>{runnerInstallPercent}%</strong></div><div className="h-1.5 overflow-hidden rounded-full bg-black/30"><div className="h-full bg-gradient-to-r from-violet-300 to-sky-300 transition-all" style={{ width: `${runnerInstallPercent}%` }} /></div>{runnerProgress.error && <p className="mt-2 text-red-200">{runnerProgress.error}</p>}</div>
+              )}
+              {managedRunners.length > 0 && <div className="mt-3 space-y-2">{managedRunners.map((runner) => <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.025] p-3" key={runner.id}><div className="min-w-0"><strong className="block truncate text-xs">{runner.label}</strong><span className={`text-[0.65rem] ${runner.status === 'available' ? 'text-emerald-200/60' : 'text-amber-200/70'}`}>{formatRunnerStatus(runner.status)}</span></div>{runner.canRemove && <button className="text-[0.68rem] font-bold text-red-200/55 hover:text-red-100 disabled:opacity-40" disabled={runnerActionId !== null} onClick={() => void uninstallManagedRunner(runner)} type="button">{runnerActionId === `remove:${runner.id}` ? 'Removendo...' : 'Remover'}</button>}</div>)}</div>}
             </section>
             {isSettingsOpen && (
               <section className="mt-5 rounded-2xl border border-purple-300/20 bg-purple-500/[0.06] p-4">

@@ -1,3 +1,4 @@
+use crate::database;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -18,6 +19,9 @@ pub(crate) struct RunnerInfo {
     path: Option<String>,
     installable: bool,
     install_hint: Option<String>,
+    managed: bool,
+    version: Option<String>,
+    can_remove: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +126,9 @@ fn runner_info(
         path: path.as_deref().map(path_to_string),
         installable,
         install_hint: install_hint.map(str::to_string),
+        managed: false,
+        version: None,
+        can_remove: false,
     }
 }
 
@@ -256,58 +263,34 @@ fn discover_steam_proton_runners() -> Vec<RunnerInfo> {
 }
 
 fn discover_managed_runners(app: &tauri::AppHandle) -> Result<Vec<RunnerInfo>, String> {
-    let runners_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Não foi possível resolver o diretório de dados do app: {error}"))?
-        .join("runners");
+    let connection = database::open(app)?;
 
-    let Ok(entries) = fs::read_dir(&runners_dir) else {
-        return Ok(Vec::new());
-    };
+    database::list_managed_runners(&connection).map(|records| {
+        records
+            .into_iter()
+            .map(|record| {
+                let executable = PathBuf::from(&record.executable_path);
+                let available = record.status == "available" && path_is_executable(&executable);
 
-    let mut runners = Vec::new();
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-
-        if !path.is_dir() {
-            continue;
-        }
-
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-
-        let proton_binary = path.join("proton");
-        let wine_binary = path.join("bin/wine");
-
-        if path_is_executable(&proton_binary) {
-            runners.push(runner_info(
-                &format!("managed-proton-{name}"),
-                "proton",
-                name,
-                "available",
-                "Launcher",
-                Some(proton_binary),
-                false,
-                None,
-            ));
-        } else if path_is_executable(&wine_binary) {
-            runners.push(runner_info(
-                &format!("managed-wine-{name}"),
-                "wine",
-                name,
-                "available",
-                "Launcher",
-                Some(wine_binary),
-                false,
-                None,
-            ));
-        }
-    }
-
-    Ok(runners)
+                RunnerInfo {
+                    id: record.id,
+                    kind: record.kind,
+                    label: record.label,
+                    status: if available { "available" } else { "missing" }.to_string(),
+                    source: record.source,
+                    path: Some(path_to_string(&executable)),
+                    installable: false,
+                    install_hint: (!available).then(|| {
+                        "O registro existe, mas o executável não está disponível no caminho salvo."
+                            .to_string()
+                    }),
+                    managed: true,
+                    version: Some(record.version),
+                    can_remove: true,
+                }
+            })
+            .collect()
+    })
 }
 
 fn discover_runners(app: &tauri::AppHandle) -> Result<Vec<RunnerInfo>, String> {
@@ -380,10 +363,6 @@ fn discover_runners(app: &tauri::AppHandle) -> Result<Vec<RunnerInfo>, String> {
     let has_wine = runners
         .iter()
         .any(|runner| runner.kind == "wine" && runner.status == "available");
-    let has_proton = runners
-        .iter()
-        .any(|runner| runner.kind == "proton" && runner.status == "available");
-
     if !has_wine {
         runners.push(runner_info(
             "managed-wine-installable",
@@ -397,18 +376,16 @@ fn discover_runners(app: &tauri::AppHandle) -> Result<Vec<RunnerInfo>, String> {
         ));
     }
 
-    if !has_proton {
-        runners.push(runner_info(
-            "managed-proton-ge-installable",
-            "proton",
-            "Proton-GE gerenciado pelo launcher",
-            "installable",
-            "Launcher",
-            None,
-            true,
-            Some("Opção planejada para baixar/registrar Proton-GE em uma pasta controlada pelo launcher."),
-        ));
-    }
+    runners.push(runner_info(
+        "managed-proton-ge-installable",
+        "proton",
+        "Proton-GE gerenciado pelo launcher",
+        "installable",
+        "Launcher",
+        None,
+        true,
+        Some("Baixe a versão mais recente do Proton-GE em uma pasta controlada pelo launcher."),
+    ));
 
     Ok(runners)
 }

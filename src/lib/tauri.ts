@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { GameInstall, GameManifest, GameSettings, GameUpdateProgress, GameUpdateResult, InstallVerificationResult, LaunchResult, RunnerInfo } from '../types/manifest';
+import type { GameInstall, GameManifest, GameSettings, GameUpdateProgress, GameUpdateResult, InstallVerificationResult, LaunchResult, ManagedRunner, ManagedRunnerRelease, RunnerInfo } from '../types/manifest';
 
 export function listGames() {
   return invoke<GameManifest[]>('list_games');
@@ -11,6 +11,18 @@ export function listInstalls() {
 
 export function listRunners() {
   return invoke<RunnerInfo[]>('list_runners');
+}
+
+export function getLatestProtonGeRelease() {
+  return invoke<ManagedRunnerRelease>('get_latest_proton_ge_release');
+}
+
+export function installLatestProtonGe() {
+  return invoke<ManagedRunner>('install_latest_proton_ge');
+}
+
+export function removeManagedRunner(runnerId: string) {
+  return invoke<boolean>('remove_managed_runner', { runnerId });
 }
 
 export function getGameSettings(gameId: string) {

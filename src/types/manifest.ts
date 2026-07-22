@@ -161,4 +161,40 @@ export type RunnerInfo = {
   path: string | null;
   installable: boolean;
   installHint: string | null;
+  managed: boolean;
+  version: string | null;
+  canRemove: boolean;
+};
+
+export type ManagedRunner = {
+  id: string;
+  kind: string;
+  version: string;
+  label: string;
+  source: string;
+  installPath: string;
+  executablePath: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ManagedRunnerRelease = {
+  version: string;
+  name: string;
+  downloadUrl: string;
+  size: number;
+  releaseUrl: string;
+  installed: boolean;
+  runnerId: string;
+};
+
+export type RunnerInstallProgress = {
+  status: string;
+  stage: string;
+  version: string;
+  downloadedBytes: number;
+  totalBytes: number;
+  message: string;
+  error: string | null;
 };
