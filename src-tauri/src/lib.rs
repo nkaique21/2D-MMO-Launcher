@@ -205,6 +205,16 @@ struct GameInstall {
     updated_at: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GameSettings {
+    game_id: String,
+    runner_override: Option<String>,
+    env_overrides: HashMap<String, String>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LaunchResult {
@@ -328,11 +338,135 @@ fn open_database(app: &tauri::AppHandle) -> Result<Connection, String> {
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS game_settings (
+                game_id TEXT PRIMARY KEY NOT NULL,
+                runner_override TEXT,
+                env_overrides_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             ",
         )
         .map_err(|error| format!("Não foi possível preparar o schema SQLite: {error}"))?;
 
     Ok(connection)
+}
+
+fn empty_game_settings(game_id: &str) -> GameSettings {
+    GameSettings {
+        game_id: game_id.to_string(),
+        ..GameSettings::default()
+    }
+}
+
+fn get_game_settings_record(
+    connection: &Connection,
+    game_id: &str,
+) -> Result<GameSettings, String> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT game_id, runner_override, env_overrides_json, created_at, updated_at
+            FROM game_settings
+            WHERE game_id = ?1
+            ",
+        )
+        .map_err(|error| {
+            format!("Não foi possível preparar configurações de {game_id}: {error}")
+        })?;
+
+    let mut rows = statement.query(params![game_id]).map_err(|error| {
+        format!("Não foi possível consultar configurações de {game_id}: {error}")
+    })?;
+    let Some(row) = rows
+        .next()
+        .map_err(|error| format!("Não foi possível ler configurações de {game_id}: {error}"))?
+    else {
+        return Ok(empty_game_settings(game_id));
+    };
+    let env_overrides_json: String = row
+        .get(2)
+        .map_err(|error| format!("Configuração de ambiente inválida para {game_id}: {error}"))?;
+    let env_overrides = serde_json::from_str(&env_overrides_json).map_err(|error| {
+        format!("JSON de configurações de ambiente inválido para {game_id}: {error}")
+    })?;
+
+    Ok(GameSettings {
+        game_id: row.get(0).map_err(|error| error.to_string())?,
+        runner_override: row.get(1).map_err(|error| error.to_string())?,
+        env_overrides,
+        created_at: row.get(3).map_err(|error| error.to_string())?,
+        updated_at: row.get(4).map_err(|error| error.to_string())?,
+    })
+}
+
+fn is_valid_environment_key(key: &str) -> bool {
+    let mut characters = key.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+
+    (first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+fn normalize_game_settings(
+    game_id: &str,
+    runner_override: Option<String>,
+    env_overrides: HashMap<String, String>,
+) -> Result<(Option<String>, HashMap<String, String>), String> {
+    if env_overrides.len() > 64 {
+        return Err("Configurações de ambiente excedem o limite de 64 variáveis.".to_string());
+    }
+
+    let runner_override = runner_override.and_then(|runner| {
+        let runner = runner.trim().to_string();
+        (!runner.is_empty()).then_some(runner)
+    });
+    let mut normalized_env = HashMap::new();
+
+    for (raw_key, value) in env_overrides {
+        let key = raw_key.trim().to_string();
+
+        if !is_valid_environment_key(&key) {
+            return Err(format!(
+                "Nome de variável de ambiente inválido: '{raw_key}'."
+            ));
+        }
+
+        if value.len() > 4096 {
+            return Err(format!(
+                "O valor de {key} excede o limite de 4096 caracteres."
+            ));
+        }
+
+        normalized_env.insert(key, value);
+    }
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    Ok((runner_override, normalized_env))
+}
+
+fn apply_game_settings_to_manifest(manifest: &mut GameManifest, settings: &GameSettings) {
+    for (key, value) in &settings.env_overrides {
+        manifest.launch.env.insert(key.clone(), value.clone());
+        manifest.update.env.insert(key.clone(), value.clone());
+    }
+}
+
+fn effective_manifest_and_settings(
+    connection: &Connection,
+    game_id: &str,
+) -> Result<(GameManifest, GameSettings), String> {
+    let mut manifest = get_manifest(game_id)?;
+    let settings = get_game_settings_record(connection, game_id)?;
+    apply_game_settings_to_manifest(&mut manifest, &settings);
+
+    Ok((manifest, settings))
 }
 
 fn get_install(connection: &Connection, game_id: &str) -> Result<GameInstall, String> {
@@ -2755,14 +2889,20 @@ fn launch_install(
     install: &GameInstall,
     action: &str,
 ) -> Result<LaunchResult, String> {
+    let connection = open_database(app)?;
+    let settings = get_game_settings_record(&connection, game_id)?;
+    let mut effective_manifest = manifest.clone();
+    apply_game_settings_to_manifest(&mut effective_manifest, &settings);
+    let manifest = &effective_manifest;
     let attempt_log_path = append_runner_log(
         app,
         game_id,
         &[action.to_string(), format!("game_id={game_id}")],
     )?;
-    let requested_runner = install
+    let requested_runner = settings
         .runner_override
         .clone()
+        .or_else(|| install.runner_override.clone())
         .unwrap_or_else(|| manifest.launch.runner.clone());
     let resolved_runner = resolve_runner(app, &requested_runner)?;
     let executable = manifest.launch.executable.as_ref().ok_or_else(|| {
@@ -2797,6 +2937,11 @@ fn launch_install(
         &[
             format!("manifest={}", manifest.name),
             format!("install_path={}", install.install_path),
+            format!("settings_runner_override={:?}", settings.runner_override),
+            format!(
+                "settings_env_override_count={}",
+                settings.env_overrides.len()
+            ),
             format!("requested_runner={requested_runner}"),
             format!("resolved_runner_id={}", resolved_runner.id),
             format!("resolved_runner_kind={}", resolved_runner.kind),
@@ -3850,6 +3995,66 @@ fn list_installs(app: tauri::AppHandle) -> Result<Vec<GameInstall>, String> {
 }
 
 #[tauri::command]
+fn get_game_settings(app: tauri::AppHandle, game_id: String) -> Result<GameSettings, String> {
+    let game_id = game_id.trim().to_string();
+    get_manifest(&game_id)?;
+    let connection = open_database(&app)?;
+
+    get_game_settings_record(&connection, &game_id)
+}
+
+#[tauri::command]
+fn save_game_settings(
+    app: tauri::AppHandle,
+    game_id: String,
+    runner_override: Option<String>,
+    env_overrides: HashMap<String, String>,
+) -> Result<GameSettings, String> {
+    let game_id = game_id.trim().to_string();
+    get_manifest(&game_id)?;
+    let (runner_override, env_overrides) =
+        normalize_game_settings(&game_id, runner_override, env_overrides)?;
+
+    if let Some(runner) = runner_override.as_deref() {
+        resolve_runner(&app, runner)?;
+    }
+
+    let env_overrides_json = serde_json::to_string(&env_overrides)
+        .map_err(|error| format!("Não foi possível serializar configurações: {error}"))?;
+    let connection = open_database(&app)?;
+    connection
+        .execute(
+            "
+            INSERT INTO game_settings (game_id, runner_override, env_overrides_json)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(game_id) DO UPDATE SET
+                runner_override = excluded.runner_override,
+                env_overrides_json = excluded.env_overrides_json,
+                updated_at = CURRENT_TIMESTAMP
+            ",
+            params![game_id, runner_override, env_overrides_json],
+        )
+        .map_err(|error| format!("Não foi possível salvar configurações do jogo: {error}"))?;
+
+    get_game_settings_record(&connection, &game_id)
+}
+
+#[tauri::command]
+fn reset_game_settings(app: tauri::AppHandle, game_id: String) -> Result<GameSettings, String> {
+    let game_id = game_id.trim().to_string();
+    get_manifest(&game_id)?;
+    let connection = open_database(&app)?;
+    connection
+        .execute(
+            "DELETE FROM game_settings WHERE game_id = ?1",
+            params![game_id],
+        )
+        .map_err(|error| format!("Não foi possível restaurar configurações do jogo: {error}"))?;
+
+    Ok(empty_game_settings(&game_id))
+}
+
+#[tauri::command]
 fn locate_existing_install(
     app: tauri::AppHandle,
     game_id: String,
@@ -4234,8 +4439,8 @@ fn run_game_update(app: tauri::AppHandle, game_id: String) -> Result<LaunchResul
         open_database(&app).map_err(|error| log_error_message(&app, &game_id, error))?;
     let install = get_install(&connection, &game_id)
         .map_err(|error| log_error_message(&app, &game_id, error))?;
-    let manifest =
-        get_manifest(&game_id).map_err(|error| log_error_message(&app, &game_id, error))?;
+    let (manifest, settings) = effective_manifest_and_settings(&connection, &game_id)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
     let install =
         reconcile_registered_install_path(&app, &connection, &game_id, &manifest, install)
             .map_err(|error| log_error_message(&app, &game_id, error))?;
@@ -4253,10 +4458,10 @@ fn run_game_update(app: tauri::AppHandle, game_id: String) -> Result<LaunchResul
         ));
     }
 
-    let requested_runner = manifest
-        .update
-        .runner
+    let requested_runner = settings
+        .runner_override
         .clone()
+        .or_else(|| manifest.update.runner.clone())
         .or_else(|| install.runner_override.clone())
         .unwrap_or_else(|| manifest.launch.runner.clone());
     let resolved_runner = resolve_runner(&app, &requested_runner)
@@ -4271,6 +4476,11 @@ fn run_game_update(app: tauri::AppHandle, game_id: String) -> Result<LaunchResul
             format!("update_strategy={}", manifest.update.strategy),
             format!("update_runner={:?}", manifest.update.runner),
             format!("update_executable={:?}", manifest.update.executable),
+            format!("settings_runner_override={:?}", settings.runner_override),
+            format!(
+                "settings_env_override_count={}",
+                settings.env_overrides.len()
+            ),
             format!("requested_runner={requested_runner}"),
             format!("resolved_runner_id={}", resolved_runner.id),
             format!("resolved_runner_kind={}", resolved_runner.kind),
@@ -4640,14 +4850,15 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         open_database(&app).map_err(|error| log_error_message(&app, &game_id, error))?;
     let install = get_install(&connection, &game_id)
         .map_err(|error| log_error_message(&app, &game_id, error))?;
-    let manifest =
-        get_manifest(&game_id).map_err(|error| log_error_message(&app, &game_id, error))?;
+    let (manifest, settings) = effective_manifest_and_settings(&connection, &game_id)
+        .map_err(|error| log_error_message(&app, &game_id, error))?;
     let install =
         reconcile_registered_install_path(&app, &connection, &game_id, &manifest, install)
             .map_err(|error| log_error_message(&app, &game_id, error))?;
-    let requested_runner = install
+    let requested_runner = settings
         .runner_override
         .clone()
+        .or_else(|| install.runner_override.clone())
         .unwrap_or_else(|| manifest.launch.runner.clone());
     let resolved_runner = resolve_runner(&app, &requested_runner)
         .map_err(|error| log_error_message(&app, &game_id, error))?;
@@ -4658,6 +4869,11 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         &[
             format!("manifest={}", manifest.name),
             format!("install_path={}", install.install_path),
+            format!("settings_runner_override={:?}", settings.runner_override),
+            format!(
+                "settings_env_override_count={}",
+                settings.env_overrides.len()
+            ),
             format!("requested_runner={requested_runner}"),
             format!("resolved_runner_id={}", resolved_runner.id),
             format!("resolved_runner_kind={}", resolved_runner.kind),
@@ -4777,6 +4993,9 @@ pub fn run() {
             greet,
             list_games,
             list_installs,
+            get_game_settings,
+            save_game_settings,
+            reset_game_settings,
             list_runners,
             locate_existing_install,
             download_and_run_installer,

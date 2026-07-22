@@ -13,10 +13,13 @@ import {
   runGameUpdate,
   runGameRemoteUpdate,
   getGameUpdateProgress,
+  getGameSettings,
   installGameFromRemoteManifest,
+  resetGameSettings,
+  saveGameSettings,
   verifyGameInstall,
 } from './lib/tauri';
-import type { GameInstall, GameManifest, GameUpdateProgress, InstallVerificationResult, RunnerInfo } from './types/manifest';
+import type { GameInstall, GameManifest, GameSettings, GameUpdateProgress, InstallVerificationResult, RunnerInfo } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
 
@@ -326,7 +329,64 @@ function App() {
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [installFlow, setInstallFlow] = useState<InstallFlowProgress | null>(null);
   const [verificationResult, setVerificationResult] = useState<InstallVerificationResult | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [gameSettings, setGameSettings] = useState<GameSettings | null>(null);
+  const [settingsRunner, setSettingsRunner] = useState('');
+  const [settingsEnv, setSettingsEnv] = useState<Record<string, string>>({});
   const [reloadSignal, setReloadSignal] = useState(0);
+
+  async function openGameSettings() {
+    setPendingActionId('load-settings');
+    setActionError(null);
+
+    try {
+      const settings = await getGameSettings(selectedGame.id);
+      setGameSettings(settings);
+      setSettingsRunner(settings.runnerOverride ?? '');
+      setSettingsEnv(settings.envOverrides);
+      setIsSettingsOpen(true);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPendingActionId(null);
+    }
+  }
+
+  async function persistGameSettings() {
+    setPendingActionId('save-settings');
+    setActionError(null);
+
+    try {
+      const envOverrides = Object.fromEntries(
+        Object.entries(settingsEnv).filter(([, value]) => value !== ''),
+      );
+      const settings = await saveGameSettings(selectedGame.id, settingsRunner || null, envOverrides);
+      setGameSettings(settings);
+      setSettingsEnv(settings.envOverrides);
+      setActionMessage('Configurações locais salvas. Elas serão aplicadas no próximo launch/update.');
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPendingActionId(null);
+    }
+  }
+
+  async function restoreGameSettings() {
+    setPendingActionId('reset-settings');
+    setActionError(null);
+
+    try {
+      const settings = await resetGameSettings(selectedGame.id);
+      setGameSettings(settings);
+      setSettingsRunner('');
+      setSettingsEnv({});
+      setActionMessage('Defaults do manifesto restaurados.');
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPendingActionId(null);
+    }
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -366,6 +426,13 @@ function App() {
       isMounted = false;
     };
   }, [reloadSignal]);
+
+  useEffect(() => {
+    setIsSettingsOpen(false);
+    setGameSettings(null);
+    setSettingsRunner('');
+    setSettingsEnv({});
+  }, [selectedGameId]);
 
   useEffect(() => {
     let isMounted = true;
@@ -726,6 +793,11 @@ function App() {
     setActionError(null);
     setActionMessage(null);
 
+    if (action.id === 'configure' || action.type === 'runnerSettings') {
+      await openGameSettings();
+      return;
+    }
+
     if (action.type === 'installedAction' && action.id === 'verify-files') {
       setPendingActionId(action.id);
       setVerificationResult(null);
@@ -925,17 +997,14 @@ function App() {
         </aside>
 
         <section className="relative flex min-w-0 flex-1 flex-col">
-          <header className="absolute left-6 right-6 top-5 z-20 flex h-8 items-center justify-between pointer-events-none">
-            <div className="flex items-center justify-between gap-6">
-              <div>
-                <p className="text-[0.65rem] font-black uppercase tracking-[0.28em] text-white/45">
-                  2D MMO Launcher
-                </p>
-              </div>
-              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-2 text-[0.68rem] font-semibold text-white/55 backdrop-blur-md">
-                <span className={`h-2 w-2 rounded-full ${loadError ? 'bg-amber-300 shadow-[0_0_18px_rgba(252,211,77,0.75)]' : 'bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.75)]'}`} />
-                {loadError ? 'Catálogo local em modo degradado' : 'Manifestos locais carregados'}
-              </div>
+          <header className="pointer-events-none absolute left-6 right-6 top-5 z-20 flex h-8 items-center justify-between">
+            <p className="text-[0.65rem] font-black uppercase tracking-[0.28em] text-white/45">
+              2D MMO Launcher
+            </p>
+
+            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-2 text-[0.68rem] font-semibold text-white/55 backdrop-blur-md">
+              <span className={`h-2 w-2 rounded-full ${loadError ? 'bg-amber-300 shadow-[0_0_18px_rgba(252,211,77,0.75)]' : 'bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.75)]'}`} />
+              {loadError ? 'Catálogo local em modo degradado' : 'Manifestos locais carregados'}
             </div>
 
             <div className="hidden">
@@ -996,8 +1065,8 @@ function App() {
                 <div className={`absolute inset-0 bg-gradient-to-br ${selectedGame.accent} opacity-20`} />
                 <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-launcher-bg via-launcher-bg/70 to-transparent" />
 
-                <div className="relative flex h-full min-h-0 max-w-[590px] flex-col justify-end p-7 pb-8 lg:p-10 lg:pb-9">
-                  <div className="mb-auto flex flex-wrap items-center gap-3">
+                <div className="relative flex h-full min-h-0 flex-col p-7 lg:p-8">
+                  <div className="flex flex-wrap items-center gap-3">
                     <span className="rounded-full border border-white/[0.12] bg-black/30 px-3 py-1.5 text-xs font-black uppercase tracking-[0.2em] text-white/85 backdrop-blur-md">
                       {selectedGame.status === 'installed' ? 'Na sua biblioteca' : 'Disponível para instalar'}
                     </span>
@@ -1008,53 +1077,86 @@ function App() {
                     )}
                   </div>
 
-                  <p className="text-sm font-bold uppercase tracking-[0.24em] text-purple-200/90">
-                    {selectedGame.meta}
-                  </p>
-                  <h2 className="mt-2 max-w-2xl text-5xl font-black leading-[0.92] tracking-[-0.05em] text-white">
-                    {selectedGame.name}
-                  </h2>
-                  <p className="mt-4 line-clamp-2 max-w-xl text-sm leading-6 text-white/60">
-                    {selectedGame.description}
-                  </p>
+                  <div className="mt-auto flex items-end justify-between gap-6">
+                    <section className="flex min-w-0 max-w-[470px] items-center gap-4 rounded-2xl border border-white/10 bg-black/50 p-3 pr-5 shadow-2xl backdrop-blur-xl">
+                      <div className={`grid h-16 w-16 shrink-0 place-items-center rounded-xl bg-gradient-to-br ${selectedGame.accent} text-sm font-black shadow-lg shadow-black/30`}>
+                        {selectedGame.shortName}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-[0.65rem] font-black uppercase tracking-[0.2em] text-purple-200/80">
+                          {selectedGame.meta}
+                        </p>
+                        <h2 className="mt-0.5 truncate text-2xl font-black tracking-tight text-white">
+                          {selectedGame.name}
+                        </h2>
+                        <p className="mt-1 truncate text-xs text-white/50">
+                          {selectedGame.description}
+                        </p>
+                      </div>
+                    </section>
 
-                  <div className="fixed bottom-8 right-8 z-30 flex flex-wrap items-center justify-end gap-3">
-                    <button
-                      className="order-2 min-w-[190px] rounded-xl bg-white px-8 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 shadow-[0_18px_60px_rgba(0,0,0,0.35)] transition hover:-translate-y-0.5 hover:bg-purple-100"
-                      disabled={isLaunching || pendingActionId === 'primary-install' || isRemoteUpdateRunning}
-                      onClick={() => void handlePrimaryAction()}
-                      type="button"
-                    >
-                      {isLaunching
-                        ? 'Iniciando...'
-                        : pendingActionId === 'primary-install'
-                          ? installFlow?.status === 'installing'
-                            ? 'Instalando...'
-                            : installFlow?.status === 'preparing'
-                              ? 'Preparando...'
-                            : installFlow?.status === 'updating'
-                              ? 'Atualizando...'
-                              : installFlow?.status === 'launching'
-                                ? 'Iniciando...'
-                                : 'Baixando...'
-                          : selectedGame.status === 'installed'
-                            ? 'Jogar'
-                            : 'Baixar e instalar'}
-                    </button>
-                    <button
-                      className="order-1 grid h-12 w-12 place-items-center rounded-full border border-white/[0.14] bg-black/50 px-0 text-xl font-bold text-white/70 shadow-lg backdrop-blur-xl transition hover:border-white/25 hover:bg-white/[0.12] hover:text-white"
-                      onClick={() => setIsDetailsOpen((open) => !open)}
-                      type="button"
-                    >
-                      ⋯
-                    </button>
+                    <div className="flex w-[min(440px,44vw)] shrink-0 flex-col items-end gap-2">
+                      {activeUpdateProgress && (
+                        <button
+                          className={`w-full overflow-hidden rounded-lg border bg-black/55 text-left text-xs shadow-xl backdrop-blur-xl transition hover:bg-black/65 ${
+                            activeUpdateProgress.status === 'error'
+                              ? 'border-red-300/25 text-red-100'
+                              : 'border-white/10 text-white/75'
+                          }`}
+                          onClick={() => setIsDetailsOpen(true)}
+                          type="button"
+                        >
+                          <div className="flex items-center gap-3 px-3 py-2">
+                            <span className="min-w-0 flex-1 truncate font-semibold" title={activeUpdateProgress.message}>
+                              {activeUpdateProgress.stageLabel ?? activeUpdateProgress.message}
+                            </span>
+                            <strong className="shrink-0 text-white/80">{updatePercent}%</strong>
+                          </div>
+                          <div className="h-0.5 overflow-hidden bg-white/[0.07]">
+                            <div className="h-full bg-white/75 transition-all duration-300" style={{ width: `${updatePercent}%` }} />
+                          </div>
+                        </button>
+                      )}
+
+                      <div className="flex items-center justify-end gap-3">
+                        <button
+                          className="grid h-12 w-12 place-items-center rounded-full border border-white/[0.14] bg-black/50 px-0 text-xl font-bold text-white/70 shadow-lg backdrop-blur-xl transition hover:border-white/25 hover:bg-white/[0.12] hover:text-white"
+                          onClick={() => setIsDetailsOpen((open) => !open)}
+                          type="button"
+                        >
+                          ⋯
+                        </button>
+                        <button
+                          className="min-w-[190px] rounded-xl bg-white px-8 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 shadow-[0_18px_60px_rgba(0,0,0,0.35)] transition hover:-translate-y-0.5 hover:bg-purple-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          disabled={isLaunching || pendingActionId === 'primary-install' || isRemoteUpdateRunning}
+                          onClick={() => void handlePrimaryAction()}
+                          type="button"
+                        >
+                          {isLaunching
+                            ? 'Iniciando...'
+                            : pendingActionId === 'primary-install'
+                              ? installFlow?.status === 'installing'
+                                ? 'Instalando...'
+                                : installFlow?.status === 'preparing'
+                                  ? 'Preparando...'
+                                : installFlow?.status === 'updating'
+                                  ? 'Atualizando...'
+                                  : installFlow?.status === 'launching'
+                                    ? 'Iniciando...'
+                                    : 'Baixando...'
+                              : selectedGame.status === 'installed'
+                                ? 'Jogar'
+                                : 'Baixar e instalar'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
 
                 </div>
               </article>
             </section>
 
-            <aside className="pointer-events-none absolute bottom-[104px] right-8 z-20 flex w-[min(440px,42vw)] flex-col items-end gap-2">
+            <aside className="pointer-events-none absolute bottom-[112px] right-8 z-20 flex w-[min(440px,42vw)] flex-col items-end gap-2">
               <section className="hidden rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-4 backdrop-blur-2xl">
                 <div className="flex items-center gap-4">
                   <div className={`grid h-16 w-16 place-items-center rounded-3xl bg-gradient-to-br ${selectedGame.accent} text-sm font-black shadow-glow`}>
@@ -1088,33 +1190,6 @@ function App() {
                   </div>
                 )}
               </section>
-
-              {activeUpdateProgress && (
-                <button className={`pointer-events-auto w-full overflow-hidden rounded-xl border bg-black/55 text-left text-xs shadow-xl backdrop-blur-xl transition hover:bg-black/65 ${
-                  activeUpdateProgress.status === 'error'
-                    ? 'border-red-300/25 text-red-100'
-                    : 'border-white/10 text-white/75'
-                }`}
-                onClick={() => setIsDetailsOpen(true)}
-                type="button"
-                >
-                  <div className="flex items-center gap-3 px-4 py-2.5">
-                    <span className="shrink-0 text-[0.65rem] font-black uppercase tracking-[0.16em] text-white/45">
-                      {formatUpdateStatus(activeUpdateProgress.status)}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate font-semibold" title={activeUpdateProgress.message}>
-                      {activeUpdateProgress.stageLabel ?? activeUpdateProgress.message}
-                    </span>
-                    <strong className="text-xs text-white/80">{updatePercent}%</strong>
-                  </div>
-                  <div className="h-1 overflow-hidden bg-white/[0.07]">
-                    <div
-                      className="h-full bg-white/75 transition-all duration-300"
-                      style={{ width: `${updatePercent}%` }}
-                    />
-                  </div>
-                </button>
-              )}
 
               <section className="hidden min-h-0 flex-1 rounded-[1.75rem] border border-white/10 bg-launcher-panel/80 p-3 shadow-2xl shadow-black/30">
                 <div className="grid h-full min-h-0 auto-rows-fr grid-cols-2 gap-1.5">
@@ -1261,6 +1336,34 @@ function App() {
                 ))}
               </div>
             </section>
+            {isSettingsOpen && (
+              <section className="mt-5 rounded-2xl border border-purple-300/20 bg-purple-500/[0.06] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div><p className="text-xs font-black uppercase tracking-[0.16em] text-purple-200">Configurações locais</p><p className="mt-1 text-xs leading-5 text-white/55">Campos vazios continuam usando o valor do manifesto.</p></div>
+                  <button className="text-lg text-white/40 hover:text-white" onClick={() => setIsSettingsOpen(false)} type="button">×</button>
+                </div>
+                <label className="mt-4 block text-xs font-bold text-white/65">Runner
+                  <select className="mt-2 w-full rounded-xl border border-white/10 bg-black/35 px-3 py-3 text-sm text-white outline-none focus:border-purple-300/40" onChange={(event) => setSettingsRunner(event.target.value)} value={settingsRunner}>
+                    <option value="">Padrão do manifesto ({formatRunner(selectedGame.launch.runner)})</option>
+                    {runners.filter((runner) => runner.status === 'available').map((runner) => <option key={runner.id} value={runner.id}>{runner.label} • {runner.source}</option>)}
+                  </select>
+                </label>
+                <div className="mt-4 space-y-3">
+                  {Object.entries(selectedGame.launch.env ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([key, defaultValue]) => (
+                    <label className="block text-xs font-bold text-white/65" key={key}>{key}
+                      <input className="mt-2 w-full rounded-xl border border-white/10 bg-black/35 px-3 py-3 font-mono text-xs text-white outline-none placeholder:text-white/25 focus:border-purple-300/40" onChange={(event) => setSettingsEnv((current) => ({ ...current, [key]: event.target.value }))} placeholder={defaultValue} value={settingsEnv[key] ?? ''} />
+                      <span className="mt-1 block break-all font-normal text-white/30">Padrão: {defaultValue}</span>
+                    </label>
+                  ))}
+                  {Object.keys(selectedGame.launch.env ?? {}).length === 0 && <p className="rounded-xl bg-black/20 p-3 text-xs text-white/45">Este manifesto não declara variáveis de ambiente ajustáveis.</p>}
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button className="rounded-xl border border-white/10 bg-white/[0.06] px-3 py-3 text-xs font-bold text-white/65 hover:bg-white/10" disabled={pendingActionId !== null} onClick={() => void restoreGameSettings()} type="button">{pendingActionId === 'reset-settings' ? 'Restaurando...' : 'Restaurar padrões'}</button>
+                  <button className="rounded-xl bg-white px-3 py-3 text-xs font-black text-slate-950 hover:bg-purple-100" disabled={pendingActionId !== null} onClick={() => void persistGameSettings()} type="button">{pendingActionId === 'save-settings' ? 'Salvando...' : 'Salvar'}</button>
+                </div>
+                {gameSettings?.updatedAt && <p className="mt-3 text-[0.65rem] text-white/30">Última persistência: {gameSettings.updatedAt}</p>}
+              </section>
+            )}
             {activeUpdateProgress && (
               <section className="mt-5 rounded-2xl border border-sky-300/20 bg-sky-500/[0.06] p-4 text-xs">
                 <div className="flex justify-between gap-3"><div><p className="font-black uppercase tracking-[0.16em] text-sky-200">Diagnóstico do update</p><p className="mt-1 font-semibold">{activeUpdateProgress.message}</p></div><strong className="text-xl">{updatePercent}%</strong></div>

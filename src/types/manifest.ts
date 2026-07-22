@@ -90,6 +90,14 @@ export type GameInstall = {
   updatedAt: string;
 };
 
+export type GameSettings = {
+  gameId: string;
+  runnerOverride: string | null;
+  envOverrides: Record<string, string>;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
 export type LaunchResult = {
   gameId: string;
   runner: string;

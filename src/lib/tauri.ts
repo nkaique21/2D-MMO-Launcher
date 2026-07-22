@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { GameInstall, GameManifest, GameUpdateProgress, GameUpdateResult, InstallVerificationResult, LaunchResult, RunnerInfo } from '../types/manifest';
+import type { GameInstall, GameManifest, GameSettings, GameUpdateProgress, GameUpdateResult, InstallVerificationResult, LaunchResult, RunnerInfo } from '../types/manifest';
 
 export function listGames() {
   return invoke<GameManifest[]>('list_games');
@@ -11,6 +11,18 @@ export function listInstalls() {
 
 export function listRunners() {
   return invoke<RunnerInfo[]>('list_runners');
+}
+
+export function getGameSettings(gameId: string) {
+  return invoke<GameSettings>('get_game_settings', { gameId });
+}
+
+export function saveGameSettings(gameId: string, runnerOverride: string | null, envOverrides: Record<string, string>) {
+  return invoke<GameSettings>('save_game_settings', { gameId, runnerOverride, envOverrides });
+}
+
+export function resetGameSettings(gameId: string) {
+  return invoke<GameSettings>('reset_game_settings', { gameId });
 }
 
 export function locateExistingInstall(gameId: string) {

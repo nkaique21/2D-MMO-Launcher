@@ -425,6 +425,18 @@ pub(crate) fn resolve_runner(
 
     let runners = discover_runners(app)?;
 
+    if let Some(runner) = runners.iter().find(|runner| {
+        runner.id.to_lowercase() == normalized_runner && runner.status == "available"
+    }) {
+        return Ok(ResolvedRunner {
+            id: runner.id.clone(),
+            kind: runner.kind.clone(),
+            label: runner.label.clone(),
+            source: runner.source.clone(),
+            path: runner.path.clone(),
+        });
+    }
+
     if normalized_runner == "proton" {
         if let Some(runner) = runners
             .iter()
