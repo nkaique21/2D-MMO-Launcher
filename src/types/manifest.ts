@@ -11,6 +11,13 @@ export type GameManifest = {
 
 export type VerificationConfig = {
   requiredFiles?: string[];
+  checksums?: VerificationChecksumConfig[];
+};
+
+export type VerificationChecksumConfig = {
+  path: string;
+  algorithm: 'crc32' | string;
+  value: string;
 };
 
 export type ManifestAssets = {
@@ -99,8 +106,17 @@ export type InstallVerificationResult = {
   executablePath: string | null;
   executableExists: boolean;
   missingFiles: string[];
+  checksumResults: ChecksumVerificationResult[];
   issues: string[];
   repairStrategy: 'archive' | 'remoteManifest' | 'windowsInstaller' | 'existing' | string | null;
+};
+
+export type ChecksumVerificationResult = {
+  path: string;
+  algorithm: string;
+  expected: string;
+  actual: string | null;
+  valid: boolean;
 };
 
 export type GameUpdateResult = {

@@ -38,6 +38,16 @@ struct GameManifest {
 struct VerificationConfig {
     #[serde(default)]
     required_files: Vec<String>,
+    #[serde(default)]
+    checksums: Vec<VerificationChecksumConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerificationChecksumConfig {
+    path: String,
+    algorithm: String,
+    value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,8 +225,19 @@ struct InstallVerificationResult {
     executable_path: Option<String>,
     executable_exists: bool,
     missing_files: Vec<String>,
+    checksum_results: Vec<ChecksumVerificationResult>,
     issues: Vec<String>,
     repair_strategy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChecksumVerificationResult {
+    path: String,
+    algorithm: String,
+    expected: String,
+    actual: Option<String>,
+    valid: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -524,6 +545,73 @@ fn missing_required_files(
         .iter()
         .filter(|required_file| !command_path_for_install(install_path, required_file).exists())
         .cloned()
+        .collect()
+}
+
+fn verify_configured_checksums(
+    install_path: &Path,
+    install_path_exists: bool,
+    checksums: &[VerificationChecksumConfig],
+) -> Result<Vec<ChecksumVerificationResult>, String> {
+    checksums
+        .iter()
+        .map(|checksum| {
+            let algorithm = checksum.algorithm.trim().to_ascii_lowercase();
+
+            if algorithm != "crc32" {
+                return Err(format!(
+                    "Algoritmo de checksum não suportado para {}: {}",
+                    checksum.path, checksum.algorithm
+                ));
+            }
+
+            let expected = checksum.value.trim().to_ascii_lowercase();
+
+            if expected.len() != 8
+                || !expected
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+            {
+                return Err(format!(
+                    "Checksum CRC32 inválido para {}: {}",
+                    checksum.path, checksum.value
+                ));
+            }
+
+            if Path::new(&checksum.path).is_absolute()
+                || checksum.path.starts_with('/')
+                || checksum.path.starts_with('\\')
+            {
+                return Err(format!(
+                    "Caminho absoluto não permitido em verification.checksums: {}",
+                    checksum.path
+                ));
+            }
+
+            let relative_path = safe_remote_relative_path(&checksum.path).map_err(|_| {
+                format!(
+                    "Caminho inseguro em verification.checksums: {}",
+                    checksum.path
+                )
+            })?;
+            let checksum_path = install_path.join(relative_path);
+            let actual = if install_path_exists && checksum_path.is_file() {
+                Some(crc32_file(&checksum_path)?)
+            } else {
+                None
+            };
+            let valid = actual
+                .as_deref()
+                .is_some_and(|actual_value| actual_value.eq_ignore_ascii_case(&expected));
+
+            Ok(ChecksumVerificationResult {
+                path: checksum.path.clone(),
+                algorithm,
+                expected,
+                actual,
+                valid,
+            })
+        })
         .collect()
 }
 
@@ -3534,6 +3622,15 @@ fn verify_game_install(
         install_path_exists,
         &manifest.verification.required_files,
     );
+    let checksum_results = verify_configured_checksums(
+        &install_path,
+        install_path_exists,
+        &manifest.verification.checksums,
+    )?;
+    let invalid_checksum_count = checksum_results
+        .iter()
+        .filter(|result| !result.valid)
+        .count();
 
     if !install_path_exists {
         issues.push(format!(
@@ -3561,7 +3658,16 @@ fn verify_game_install(
         ));
     }
 
-    let valid = install_path_exists && executable_exists && missing_files.is_empty();
+    if invalid_checksum_count > 0 {
+        issues.push(format!(
+            "{invalid_checksum_count} arquivo(s) possuem checksum ausente ou divergente."
+        ));
+    }
+
+    let valid = install_path_exists
+        && executable_exists
+        && missing_files.is_empty()
+        && invalid_checksum_count == 0;
 
     Ok(InstallVerificationResult {
         game_id,
@@ -3571,6 +3677,7 @@ fn verify_game_install(
         executable_path: executable_path.map(|path| path.to_string_lossy().to_string()),
         executable_exists,
         missing_files,
+        checksum_results,
         issues,
         repair_strategy: repair_strategy_for_manifest(&manifest),
     })
@@ -3578,7 +3685,7 @@ fn verify_game_install(
 
 #[cfg(test)]
 mod tests {
-    use super::missing_required_files;
+    use super::{missing_required_files, verify_configured_checksums, VerificationChecksumConfig};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3617,6 +3724,98 @@ mod tests {
         );
 
         assert_eq!(missing, required_files);
+    }
+
+    #[test]
+    fn verifies_configured_crc32_checksums() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("relógio do sistema válido")
+            .as_nanos();
+        let install_path = std::env::temp_dir().join(format!(
+            "two-d-mmo-launcher-checksum-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&install_path).expect("criar instalação temporária");
+        fs::write(install_path.join("game.bin"), b"test").expect("criar arquivo de teste");
+        let checksums = vec![VerificationChecksumConfig {
+            path: "game.bin".to_string(),
+            algorithm: "crc32".to_string(),
+            value: "d87f7e0c".to_string(),
+        }];
+
+        let results = verify_configured_checksums(&install_path, true, &checksums)
+            .expect("verificar checksum");
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].valid);
+        assert_eq!(results[0].actual.as_deref(), Some("d87f7e0c"));
+        fs::remove_dir_all(install_path).expect("remover instalação temporária");
+    }
+
+    #[test]
+    fn reports_divergent_and_missing_checksum_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("relógio do sistema válido")
+            .as_nanos();
+        let install_path = std::env::temp_dir().join(format!(
+            "two-d-mmo-launcher-checksum-failure-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&install_path).expect("criar instalação temporária");
+        fs::write(install_path.join("game.bin"), b"changed").expect("criar arquivo de teste");
+        let checksums = vec![
+            VerificationChecksumConfig {
+                path: "game.bin".to_string(),
+                algorithm: "crc32".to_string(),
+                value: "d87f7e0c".to_string(),
+            },
+            VerificationChecksumConfig {
+                path: "missing.bin".to_string(),
+                algorithm: "crc32".to_string(),
+                value: "00000000".to_string(),
+            },
+        ];
+
+        let results = verify_configured_checksums(&install_path, true, &checksums)
+            .expect("verificar checksums");
+
+        assert!(!results[0].valid);
+        assert!(results[0].actual.is_some());
+        assert!(!results[1].valid);
+        assert!(results[1].actual.is_none());
+        fs::remove_dir_all(install_path).expect("remover instalação temporária");
+    }
+
+    #[test]
+    fn rejects_invalid_checksum_configuration() {
+        let install_path = std::env::temp_dir();
+        let unsafe_path = vec![VerificationChecksumConfig {
+            path: "../outside.bin".to_string(),
+            algorithm: "crc32".to_string(),
+            value: "00000000".to_string(),
+        }];
+        let unsupported_algorithm = vec![VerificationChecksumConfig {
+            path: "game.bin".to_string(),
+            algorithm: "sha256".to_string(),
+            value: "00000000".to_string(),
+        }];
+        let invalid_value = vec![VerificationChecksumConfig {
+            path: "game.bin".to_string(),
+            algorithm: "crc32".to_string(),
+            value: "not-a-crc".to_string(),
+        }];
+        let absolute_path = vec![VerificationChecksumConfig {
+            path: "/tmp/outside.bin".to_string(),
+            algorithm: "crc32".to_string(),
+            value: "00000000".to_string(),
+        }];
+
+        assert!(verify_configured_checksums(&install_path, true, &unsafe_path).is_err());
+        assert!(verify_configured_checksums(&install_path, true, &absolute_path).is_err());
+        assert!(verify_configured_checksums(&install_path, true, &unsupported_algorithm).is_err());
+        assert!(verify_configured_checksums(&install_path, true, &invalid_value).is_err());
     }
 }
 

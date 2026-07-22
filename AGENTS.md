@@ -443,6 +443,10 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - O primeiro fluxo de reparo explícito foi conectado para instalações com `repairStrategy: "remoteManifest"`. Quando a verificação encontra problema, a pasta registrada ainda existe e o manifesto suporta update remoto, o drawer mostra `Reparar arquivos pelo manifesto`; jogos com estratégias `archive`, `windowsInstaller`, `existing` ou manuais continuam apenas com diagnóstico para evitar reinstalações destrutivas inesperadas.
 - Update explícito e reparo compartilham uma única função no frontend e o mesmo `run_game_remote_update` transacional do backend, incluindo staging, validação, aplicação, eventos Tauri e fallback por `runner.log`. Ao terminar, o frontend chama `verify_game_install` novamente e substitui o diagnóstico antigo pelo estado atual.
 - Teste real controlado do reparo no RavenQuest: `ravenquest_dx_BE.exe` foi movido temporariamente para backup, `Verificar arquivos` mostrou `Instalação requer atenção` e o CTA de reparo, o reparo remoto recriou o executável e a reverificação automática mudou para `Instalação íntegra`. `cmp` confirmou que o arquivo baixado era binariamente idêntico ao backup original; o backup temporário foi removido e a instalação ficou restaurada.
+- A verificação genérica agora aceita `verification.checksums` opcional no manifesto, inicialmente com algoritmo `crc32`. Cada entrada declara `path`, `algorithm` e `value`; caminhos absolutos, travessia para fora da instalação, valores CRC inválidos e algoritmos desconhecidos são rejeitados pelo backend.
+- `verify_game_install` calcula os checksums configurados sem alterar arquivos e retorna `checksumResults` com caminho, algoritmo, valor esperado, valor obtido opcional e validade. Um checksum ausente ou divergente torna a instalação não íntegra e aparece na lista de problemas, mas não habilita reparo remoto quando o manifesto não oferece `remoteManifest`.
+- O drawer de verificação mostra uma seção `Checksums` com estado válido/divergente/ausente e os valores esperado/obtido. O PokeMMO declara o CRC32 real de `PokeMMO.sh` (`4a98704b`) como primeiro uso do recurso; os demais jogos continuam compatíveis sem declarar checksums.
+- Testes Rust cobrem CRC32 válido, arquivo divergente, arquivo ausente, caminho inseguro/absoluto, algoritmo desconhecido e valor malformado. Validações da etapa: `cargo test --manifest-path src-tauri/Cargo.toml` (5 testes), `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml`, `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`, validação de todos os JSONs e `git diff --check` passaram. No Tauri real, o usuário confirmou `Instalação íntegra` e `CRC32 válido` para o PokeMMO instalado.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -455,7 +459,7 @@ Próximo passo recomendado para desenvolvimento:
 
 2. **Evoluir reparo das instalações**
    - O reparo explícito por `remoteManifest` já está implementado e validado no RavenQuest, sem disparar downloads automaticamente durante a verificação.
-   - Avaliar checksums opcionais por manifesto para jogos sem manifesto remoto; manter `requiredFiles` como checagem estrutural rápida.
+   - Checksums CRC32 opcionais por manifesto já estão implementados para jogos sem manifesto remoto; manter `requiredFiles` como checagem estrutural rápida e declarar checksums adicionais apenas quando houver valores estáveis/confiáveis para a versão distribuída.
    - Definir fluxos não destrutivos antes de habilitar reparo para `archive` ou `windowsInstaller`; até lá, essas estratégias permanecem apenas como orientação diagnóstica.
 
 3. **Camada de runners**

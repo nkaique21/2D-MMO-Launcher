@@ -27,7 +27,14 @@
     "args": []
   },
   "verification": {
-    "requiredFiles": ["PokeMMO.sh", "PokeMMO.exe", "data", "roms"]
+    "requiredFiles": ["PokeMMO.sh", "PokeMMO.exe", "data", "roms"],
+    "checksums": [
+      {
+        "path": "PokeMMO.sh",
+        "algorithm": "crc32",
+        "value": "4a98704b"
+      }
+    ]
   },
   "update": {
     "strategy": "manual"

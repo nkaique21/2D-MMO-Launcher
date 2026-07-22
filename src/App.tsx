@@ -1282,7 +1282,7 @@ function App() {
                     </p>
                     <p className="mt-1 text-white/65">
                       {verificationResult.valid
-                        ? 'A pasta, o executável e os arquivos obrigatórios foram encontrados.'
+                        ? 'A pasta, o executável, os arquivos obrigatórios e os checksums configurados estão válidos.'
                         : verificationResult.issues[0] ?? 'Foram encontrados problemas na instalação.'}
                     </p>
                   </div>
@@ -1294,6 +1294,13 @@ function App() {
                   <p><strong>Reparo:</strong> {verificationResult.repairStrategy ?? 'manual'}</p>
                   {verificationResult.issues.map((issue) => <p key={issue}>• {issue}</p>)}
                   {verificationResult.missingFiles.map((file) => <p key={file}>• Ausente: {file}</p>)}
+                  {verificationResult.checksumResults.map((checksum) => (
+                    <p className={checksum.valid ? 'text-emerald-200/75' : 'text-amber-100'} key={`${checksum.algorithm}:${checksum.path}`}>
+                      • {checksum.algorithm.toUpperCase()} {checksum.path}: {checksum.valid
+                        ? 'válido'
+                        : `esperado ${checksum.expected}, obtido ${checksum.actual ?? 'arquivo ausente'}`}
+                    </p>
+                  ))}
                 </div>
                 {!verificationResult.valid
                   && verificationResult.installPathExists
