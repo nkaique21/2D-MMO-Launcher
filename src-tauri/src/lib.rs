@@ -163,7 +163,7 @@ fn default_true() -> bool {
 
 const HTTP_TIMEOUT_SECONDS: u64 = 60;
 const REMOTE_UPDATE_PROGRESS_INTERVAL: usize = 100;
-const REMOTE_UPDATE_LOG_INTERVAL: usize = 1000;
+const REMOTE_UPDATE_LOG_INTERVAL: usize = 100;
 const REMOTE_UPDATE_DOWNLOAD_PROGRESS_INTERVAL: usize = 1;
 const REMOTE_UPDATE_APPLY_PROGRESS_INTERVAL: usize = 50;
 const DOWNLOAD_RETRY_ATTEMPTS: usize = 3;
@@ -2370,6 +2370,18 @@ fn run_remote_manifest_update(
                     Some(&attempt_log_path),
                     None,
                 );
+
+                append_runner_log(
+                    &app,
+                    &game_id,
+                    &[
+                        "remote_update_progress=applying".to_string(),
+                        format!("checked_files={updated_files}"),
+                        format!("updated_files={updated_files}"),
+                        format!("total_files={}", planned_files.len()),
+                        format!("current_file={}", planned_file.remote_path),
+                    ],
+                )?;
             }
         }
 
