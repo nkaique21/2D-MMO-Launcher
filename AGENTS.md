@@ -428,6 +428,9 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - As ações secundárias foram transferidas para o drawer aberto pelo botão `⋯`. O drawer preserva localizar/abrir pasta, atualizar, verificar, desvincular, configurar e métodos de instalação sem competir visualmente com `Jogar`/`Baixar e instalar`.
 - Para jogos com update remoto, especialmente RavenQuest, o progresso visível na tela principal agora é uma faixa fina e discreta acima da barra de ações, contendo status, etapa, porcentagem e barra de progresso. Clicar nessa faixa abre o drawer com o diagnóstico completo (fonte, evento, stage, arquivo, alvo e log).
 - Validações desse redesign: `npm run build` passou; `npm run tauri dev` compilou e abriu a janela nativa; o usuário confirmou que o novo layout ficou bem encaixado, sem rolagem, com banner em tela cheia, botão principal no canto inferior direito e progresso sem cobrir o conteúdo.
+- Foi implementado um fluxo genérico de instalação para métodos `installation.methods[].type: "archive"` em pacotes ZIP. O backend baixa em background com retry e headers opcionais, extrai em staging com proteção contra caminhos inseguros, aceita `stripTopLevelDir`, valida `launch.executable`, garante permissão executável no Linux, move os arquivos para `games/<game_id>`, registra a instalação no SQLite e inicia o jogo via runner do manifesto.
+- O Medivia agora possui instalação Linux gerenciada pelo manifesto usando `https://download.medivia.online/medivia-linux-build.zip`, `format: "zip"`, `stripTopLevelDir: true` e `launchAfterInstall: true`. O ZIP oficial possui a pasta superior `medivia-linux-build/` e o executável nativo ELF x86-64 `medivia`; o manifesto usa `launch.runner: "native"` e `launch.executable: "medivia"`.
+- Validação real do Medivia: o usuário clicou em `Baixar e instalar`; o launcher baixou aproximadamente 90 MB, extraiu os arquivos, registrou `/home/kaiquelb/.local/share/dev.kaiquelb.2d-mmo-launcher/games/medivia` no SQLite e abriu o cliente automaticamente. O `runner.log` confirmou `action=launch_after_archive_install`, runner `native`, working dir da instalação, PID e inicialização do Medivia x86-64. `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml` e `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passaram.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -436,7 +439,7 @@ Próximo passo recomendado para desenvolvimento:
 
 1. **Completar dados de execução nos manifestos**
    - Definir `launch.executable` para outros jogos nativos quando houver executável conhecido.
-   - Confirmar executable/path real de Zezenia e Medivia.
+   - Confirmar executable/path real de Zezenia.
    - Avaliar se o manifesto precisa de campos adicionais para validação de pasta, executáveis alternativos ou argumentos por plataforma.
 
 2. **Validar instalações registradas**

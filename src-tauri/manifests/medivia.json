@@ -11,12 +11,20 @@
       {
         "type": "existing",
         "label": "Localizar instalação existente"
+      },
+      {
+        "type": "archive",
+        "label": "Baixar e instalar",
+        "url": "https://download.medivia.online/medivia-linux-build.zip",
+        "format": "zip",
+        "stripTopLevelDir": true,
+        "launchAfterInstall": true
       }
     ]
   },
   "launch": {
     "runner": "native",
-    "executable": null,
+    "executable": "medivia",
     "args": []
   },
   "update": {
