@@ -7,6 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
@@ -113,6 +114,8 @@ struct UpdateConfig {
     target_dir: Option<String>,
     #[serde(rename = "targetDirBase")]
     target_dir_base: Option<String>,
+    #[serde(rename = "maxConcurrentDownloads")]
+    max_concurrent_downloads: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +145,15 @@ struct RemoteUpdateManifest {
     min_client_version: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+struct RemotePlannedFile {
+    remote_path: String,
+    expected: RemoteFileEntry,
+    destination: PathBuf,
+    staging_destination: PathBuf,
+    url: String,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -149,8 +161,12 @@ fn default_true() -> bool {
 const HTTP_TIMEOUT_SECONDS: u64 = 60;
 const REMOTE_UPDATE_PROGRESS_INTERVAL: usize = 100;
 const REMOTE_UPDATE_LOG_INTERVAL: usize = 1000;
+const REMOTE_UPDATE_DOWNLOAD_PROGRESS_INTERVAL: usize = 25;
+const REMOTE_UPDATE_APPLY_PROGRESS_INTERVAL: usize = 50;
 const DOWNLOAD_RETRY_ATTEMPTS: usize = 3;
 const DOWNLOAD_RETRY_DELAY_SECONDS: u64 = 2;
+const DEFAULT_REMOTE_UPDATE_CONCURRENCY: usize = 6;
+const MAX_REMOTE_UPDATE_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1190,9 +1206,13 @@ fn update_stage_label_from_stage(stage: &str) -> String {
         "decodeRemoteManifest" => "Decodificar manifesto remoto",
         "buildFileList" => "Montar lista de arquivos",
         "checkingFiles" => "Verificar arquivos locais",
+        "planUpdate" => "Planejar arquivos divergentes",
+        "prepareStagingDir" => "Preparar staging do update",
         "downloadingFiles" => "Baixar arquivos divergentes",
         "validateDownloadedFile" => "Validar arquivo baixado",
+        "validateStagedFiles" => "Validar staging completo",
         "applyDownloadedFile" => "Aplicar arquivo baixado",
+        "applyStagedFiles" => "Aplicar arquivos no jogo",
         "done" => "Concluído",
         _ => stage,
     }
@@ -1202,8 +1222,10 @@ fn update_stage_label_from_stage(stage: &str) -> String {
 fn update_status_from_stage(stage: &str) -> String {
     match stage {
         "downloadRemoteManifest" | "decodeRemoteManifest" | "buildFileList" => "manifest",
-        "checkingFiles" => "checking",
-        "downloadingFiles" | "validateDownloadedFile" | "applyDownloadedFile" => "downloading",
+        "checkingFiles" | "planUpdate" => "checking",
+        "prepareStagingDir" | "downloadingFiles" => "downloading",
+        "validateDownloadedFile" | "validateStagedFiles" => "validating",
+        "applyDownloadedFile" | "applyStagedFiles" => "applying",
         "done" => "done",
         _ => "preparing",
     }
@@ -1248,6 +1270,18 @@ fn progress_message_from_log(
         return current_file
             .map(|file| format!("Baixando {file}"))
             .unwrap_or_else(|| "Baixando arquivos divergentes...".to_string());
+    }
+
+    if status == "validating" {
+        return current_file
+            .map(|file| format!("Validando {file}"))
+            .unwrap_or_else(|| "Validando staging do update...".to_string());
+    }
+
+    if status == "applying" {
+        return current_file
+            .map(|file| format!("Aplicando {file}"))
+            .unwrap_or_else(|| "Aplicando arquivos no jogo...".to_string());
     }
 
     if status == "checking" && total > 0 {
@@ -1309,6 +1343,12 @@ fn parse_latest_update_progress_from_log(
                     stage_label = update_stage_label_from_stage(&stage);
                 } else if value == "downloading" {
                     stage = "downloadingFiles".to_string();
+                    stage_label = update_stage_label_from_stage(&stage);
+                } else if value == "validating" {
+                    stage = "validateStagedFiles".to_string();
+                    stage_label = update_stage_label_from_stage(&stage);
+                } else if value == "applying" {
+                    stage = "applyStagedFiles".to_string();
                     stage_label = update_stage_label_from_stage(&stage);
                 }
             }
@@ -1446,7 +1486,7 @@ fn crc32_file(path: &Path) -> Result<String, String> {
     let mut file = fs::File::open(path)
         .map_err(|error| format!("Não foi possível abrir {}: {error}", path.display()))?;
     let mut hasher = Hasher::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = [0_u8; 1024 * 1024];
 
     loop {
         let read = file
@@ -1519,6 +1559,243 @@ fn remote_update_target_dir(
     }
 
     Ok(install_path.to_path_buf())
+}
+
+fn remote_update_concurrency(manifest: &GameManifest) -> usize {
+    manifest
+        .update
+        .max_concurrent_downloads
+        .unwrap_or(DEFAULT_REMOTE_UPDATE_CONCURRENCY)
+        .clamp(1, MAX_REMOTE_UPDATE_CONCURRENCY)
+}
+
+fn remote_update_staging_dir(app: &tauri::AppHandle, game_id: &str) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        format!("Não foi possível resolver o diretório de dados do app: {error}")
+    })?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "unknown-time".to_string());
+
+    Ok(app_data_dir
+        .join("updates")
+        .join(sanitize_path_segment(game_id))
+        .join(timestamp)
+        .join("staging"))
+}
+
+fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    fs::remove_dir_all(path).map_err(|error| {
+        format!(
+            "Não foi possível remover diretório temporário {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn apply_staged_file(staged_path: &Path, destination: &Path) -> Result<(), String> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Não foi possível criar diretório {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+
+    if destination.exists() {
+        fs::remove_file(destination).map_err(|error| {
+            format!(
+                "Não foi possível remover arquivo antigo {}: {error}",
+                destination.display()
+            )
+        })?;
+    }
+
+    fs::rename(staged_path, destination).map_err(|error| {
+        format!(
+            "Não foi possível aplicar update em {}: {error}",
+            destination.display()
+        )
+    })
+}
+
+fn download_planned_files_to_staging(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    planned_files: &[RemotePlannedFile],
+    concurrency: usize,
+    total_files: usize,
+    target_dir: &Path,
+    attempt_log_path: &Path,
+) -> Result<u64, String> {
+    if planned_files.is_empty() {
+        return Ok(0);
+    }
+
+    let worker_count = concurrency.min(planned_files.len()).max(1);
+    let (task_tx, task_rx) = mpsc::channel::<RemotePlannedFile>();
+    let (result_tx, result_rx) = mpsc::channel::<Result<(String, u64), String>>();
+    let task_rx = Arc::new(Mutex::new(task_rx));
+    let mut workers = Vec::with_capacity(worker_count);
+
+    append_runner_log(
+        app,
+        game_id,
+        &[
+            "remote_update_parallel_downloads=true".to_string(),
+            format!("remote_update_download_workers={worker_count}"),
+            format!("remote_update_planned_downloads={}", planned_files.len()),
+        ],
+    )?;
+
+    for _ in 0..worker_count {
+        let task_rx = Arc::clone(&task_rx);
+        let result_tx = result_tx.clone();
+        let app = app.clone();
+        let game_id = game_id.to_string();
+
+        workers.push(thread::spawn(move || {
+            let client = match http_client() {
+                Ok(client) => client,
+                Err(error) => {
+                    let _ = result_tx.send(Err(error));
+                    return;
+                }
+            };
+
+            loop {
+                let planned_file = match task_rx.lock() {
+                    Ok(receiver) => receiver.recv(),
+                    Err(error) => {
+                        let _ = result_tx.send(Err(format!(
+                            "Fila de downloads ficou indisponível: {error}"
+                        )));
+                        return;
+                    }
+                };
+
+                let Ok(planned_file) = planned_file else {
+                    break;
+                };
+
+                let result = download_file_with_retry_using_client(
+                    &client,
+                    &planned_file.url,
+                    &planned_file.staging_destination,
+                    Some((&app, &game_id, &planned_file.remote_path)),
+                )
+                .and_then(|_| {
+                    match local_file_matches(
+                        &planned_file.staging_destination,
+                        &planned_file.expected,
+                    )? {
+                        true => Ok(()),
+                        false => Err(format!(
+                            "Arquivo em staging falhou na validação: {}",
+                            planned_file.remote_path
+                        )),
+                    }
+                })
+                .and_then(|_| {
+                    fs::metadata(&planned_file.staging_destination)
+                        .map(|metadata| (planned_file.remote_path.clone(), metadata.len()))
+                        .map_err(|error| {
+                            format!(
+                                "Não foi possível inspecionar arquivo em staging {}: {error}",
+                                planned_file.staging_destination.display()
+                            )
+                        })
+                });
+
+                let _ = result_tx.send(result);
+            }
+        }));
+    }
+
+    for planned_file in planned_files.iter().cloned() {
+        task_tx.send(planned_file).map_err(|error| {
+            format!("Não foi possível enfileirar arquivo para download: {error}")
+        })?;
+    }
+    drop(task_tx);
+    drop(result_tx);
+
+    let mut downloaded_files = 0_usize;
+    let mut downloaded_bytes = 0_u64;
+
+    for result in result_rx {
+        match result {
+            Ok((remote_path, bytes)) => {
+                downloaded_files += 1;
+                downloaded_bytes += bytes;
+
+                if downloaded_files == 1
+                    || downloaded_files % REMOTE_UPDATE_DOWNLOAD_PROGRESS_INTERVAL == 0
+                    || downloaded_files == planned_files.len()
+                {
+                    emit_update_progress_detail(
+                        app,
+                        game_id,
+                        "downloading",
+                        Some("downloadingFiles"),
+                        Some("Baixar arquivos divergentes"),
+                        downloaded_files,
+                        downloaded_files,
+                        planned_files.len(),
+                        Some(remote_path.clone()),
+                        format!(
+                            "Baixando e validando staging: {downloaded_files} de {} arquivos...",
+                            planned_files.len()
+                        ),
+                        Some(target_dir),
+                        Some(attempt_log_path),
+                        None,
+                    );
+                }
+
+                if downloaded_files == 1
+                    || downloaded_files % REMOTE_UPDATE_LOG_INTERVAL == 0
+                    || downloaded_files == planned_files.len()
+                {
+                    append_runner_log(
+                        app,
+                        game_id,
+                        &[
+                            "remote_update_progress=downloading".to_string(),
+                            "remote_update_download_validation=parallel_worker".to_string(),
+                            format!("checked_files={downloaded_files}"),
+                            format!("updated_files={downloaded_files}"),
+                            format!("total_files={}", planned_files.len()),
+                            format!("remote_manifest_total_files={total_files}"),
+                            format!("downloaded_bytes={downloaded_bytes}"),
+                            format!("current_file={remote_path}"),
+                        ],
+                    )?;
+                }
+            }
+            Err(error) => {
+                for worker in workers {
+                    let _ = worker.join();
+                }
+
+                return Err(error);
+            }
+        }
+    }
+
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| "Worker de download encerrou com panic.".to_string())?;
+    }
+
+    Ok(downloaded_bytes)
 }
 
 fn run_remote_manifest_update(
@@ -1765,18 +2042,19 @@ fn run_remote_manifest_update(
     let mut checked_files = 0_usize;
     let mut updated_files = 0_usize;
     let mut skipped_files = 0_usize;
-    let mut downloaded_bytes = 0_u64;
-    let download_client = http_client().map_err(|error| {
+    let mut planned_files = Vec::new();
+    let staging_dir = remote_update_staging_dir(&app, &game_id).map_err(|error| {
         log_and_emit_update_error(
             &app,
             &game_id,
-            "downloadingFiles",
-            "Preparar cliente HTTP",
+            "prepareStagingDir",
+            "Preparar staging do update",
             error,
             Some(&attempt_log_path),
             Some(&target_dir),
         )
     })?;
+    let download_concurrency = remote_update_concurrency(&manifest);
 
     remote_files.sort_by(|left, right| left.0.cmp(&right.0));
 
@@ -1830,7 +2108,7 @@ fn run_remote_manifest_update(
                 Some(&target_dir),
             )
         })?;
-        let destination = target_dir.join(relative_path);
+        let destination = target_dir.join(&relative_path);
 
         if local_file_matches(&destination, &expected).map_err(|error| {
             log_and_emit_update_error(
@@ -1847,42 +2125,122 @@ fn run_remote_manifest_update(
             continue;
         }
 
+        let file_url = remote_file_url(&remote_manifest.url, &remote_path);
+        let staging_destination = staging_dir.join(&relative_path);
+
+        planned_files.push(RemotePlannedFile {
+            remote_path,
+            expected,
+            destination,
+            staging_destination,
+            url: file_url,
+        });
+    }
+
+    append_update_stage_log(
+        &app,
+        &game_id,
+        "planUpdate",
+        "Planejar arquivos divergentes",
+    )?;
+    append_runner_log(
+        &app,
+        &game_id,
+        &[
+            "remote_update_progress=checking".to_string(),
+            format!("checked_files={checked_files}"),
+            format!("updated_files={updated_files}"),
+            format!("skipped_files={skipped_files}"),
+            format!("total_files={total_files}"),
+            format!("planned_update_files={}", planned_files.len()),
+            format!("remote_update_download_concurrency={download_concurrency}"),
+            format!("remote_update_staging_dir={}", staging_dir.display()),
+        ],
+    )?;
+    emit_update_progress_detail(
+        &app,
+        &game_id,
+        "checking",
+        Some("planUpdate"),
+        Some("Planejar arquivos divergentes"),
+        checked_files,
+        updated_files,
+        total_files,
+        None,
+        format!(
+            "Verificação concluída: {} arquivo(s) divergente(s) serão baixados em staging.",
+            planned_files.len()
+        ),
+        Some(&target_dir),
+        Some(&attempt_log_path),
+        None,
+    );
+
+    let mut downloaded_bytes = 0_u64;
+
+    if !planned_files.is_empty() {
+        append_update_stage_log(
+            &app,
+            &game_id,
+            "prepareStagingDir",
+            "Preparar staging do update",
+        )?;
         emit_update_progress_detail(
             &app,
             &game_id,
             "downloading",
-            Some("downloadingFiles"),
-            Some("Baixar arquivos divergentes"),
-            checked_files,
-            updated_files,
-            total_files,
-            Some(remote_path.clone()),
-            format!("Baixando {remote_path}"),
+            Some("prepareStagingDir"),
+            Some("Preparar staging do update"),
+            0,
+            0,
+            planned_files.len(),
+            None,
+            "Preparando pasta temporária para baixar tudo antes de substituir...".to_string(),
             Some(&target_dir),
             Some(&attempt_log_path),
             None,
         );
 
-        append_runner_log(
+        remove_dir_if_exists(&staging_dir).map_err(|error| {
+            log_and_emit_update_error(
+                &app,
+                &game_id,
+                "prepareStagingDir",
+                "Preparar staging do update",
+                error,
+                Some(&attempt_log_path),
+                Some(&target_dir),
+            )
+        })?;
+        fs::create_dir_all(&staging_dir).map_err(|error| {
+            log_and_emit_update_error(
+                &app,
+                &game_id,
+                "prepareStagingDir",
+                "Preparar staging do update",
+                format!(
+                    "Não foi possível criar staging {}: {error}",
+                    staging_dir.display()
+                ),
+                Some(&attempt_log_path),
+                Some(&target_dir),
+            )
+        })?;
+
+        append_update_stage_log(
             &app,
             &game_id,
-            &[
-                "remote_update_progress=downloading".to_string(),
-                format!("checked_files={checked_files}"),
-                format!("updated_files={updated_files}"),
-                format!("total_files={total_files}"),
-                format!("current_file={remote_path}"),
-            ],
+            "downloadingFiles",
+            "Baixar arquivos divergentes",
         )?;
-
-        let file_url = remote_file_url(&remote_manifest.url, &remote_path);
-        let temporary_destination = destination.with_extension("download");
-
-        download_file_with_retry_using_client(
-            &download_client,
-            &file_url,
-            &temporary_destination,
-            Some((&app, &game_id, &remote_path)),
+        downloaded_bytes = download_planned_files_to_staging(
+            &app,
+            &game_id,
+            &planned_files,
+            download_concurrency,
+            total_files,
+            &target_dir,
+            &attempt_log_path,
         )
         .map_err(|error| {
             log_and_emit_update_error(
@@ -1896,85 +2254,97 @@ fn run_remote_manifest_update(
             )
         })?;
 
-        let downloaded_size = fs::metadata(&temporary_destination)
-            .map_err(|error| {
-                log_and_emit_update_error(
+        append_update_stage_log(
+            &app,
+            &game_id,
+            "validateStagedFiles",
+            "Validar staging completo",
+        )?;
+        append_runner_log(
+            &app,
+            &game_id,
+            &[
+                "remote_update_progress=validating".to_string(),
+                "remote_update_staging_validation=completed_during_parallel_download".to_string(),
+                format!("checked_files={}", planned_files.len()),
+                format!("updated_files={updated_files}"),
+                format!("total_files={}", planned_files.len()),
+            ],
+        )?;
+        emit_update_progress_detail(
+            &app,
+            &game_id,
+            "validating",
+            Some("validateStagedFiles"),
+            Some("Validar staging completo"),
+            planned_files.len(),
+            updated_files,
+            planned_files.len(),
+            None,
+            "Staging validado em paralelo durante os downloads.".to_string(),
+            Some(&target_dir),
+            Some(&attempt_log_path),
+            None,
+        );
+
+        append_update_stage_log(
+            &app,
+            &game_id,
+            "applyStagedFiles",
+            "Aplicar arquivos no jogo",
+        )?;
+        for planned_file in &planned_files {
+            apply_staged_file(&planned_file.staging_destination, &planned_file.destination)
+                .map_err(|error| {
+                    log_and_emit_update_error(
+                        &app,
+                        &game_id,
+                        "applyStagedFiles",
+                        "Aplicar arquivos no jogo",
+                        error,
+                        Some(&attempt_log_path),
+                        Some(&target_dir),
+                    )
+                })?;
+
+            updated_files += 1;
+
+            if updated_files == 1
+                || updated_files % REMOTE_UPDATE_APPLY_PROGRESS_INTERVAL == 0
+                || updated_files == planned_files.len()
+            {
+                emit_update_progress_detail(
                     &app,
                     &game_id,
-                    "validateDownloadedFile",
-                    "Validar arquivo baixado",
+                    "applying",
+                    Some("applyStagedFiles"),
+                    Some("Aplicar arquivos no jogo"),
+                    updated_files,
+                    updated_files,
+                    planned_files.len(),
+                    Some(planned_file.remote_path.clone()),
                     format!(
-                        "Não foi possível validar arquivo baixado {}: {error}",
-                        temporary_destination.display()
+                        "Aplicando arquivos: {updated_files} de {} concluídos...",
+                        planned_files.len()
                     ),
-                    Some(&attempt_log_path),
                     Some(&target_dir),
-                )
-            })?
-            .len();
-        let downloaded_entry = RemoteFileEntry {
-            checksum: expected.checksum.clone(),
-            size: expected.size,
-        };
+                    Some(&attempt_log_path),
+                    None,
+                );
+            }
+        }
 
-        if !local_file_matches(&temporary_destination, &downloaded_entry).map_err(|error| {
+        remove_dir_if_exists(&staging_dir).map_err(|error| {
             log_and_emit_update_error(
                 &app,
                 &game_id,
-                "validateDownloadedFile",
-                "Validar arquivo baixado",
+                "applyStagedFiles",
+                "Aplicar arquivos no jogo",
                 error,
                 Some(&attempt_log_path),
                 Some(&target_dir),
             )
-        })? {
-            let _ = fs::remove_file(&temporary_destination);
-
-            return Err(log_and_emit_update_error(
-                &app,
-                &game_id,
-                "validateDownloadedFile",
-                "Validar arquivo baixado",
-                format!("Arquivo baixado falhou na validação: {remote_path}"),
-                Some(&attempt_log_path),
-                Some(&target_dir),
-            ));
-        }
-
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                log_and_emit_update_error(
-                    &app,
-                    &game_id,
-                    "applyDownloadedFile",
-                    "Aplicar arquivo baixado",
-                    format!(
-                        "Não foi possível criar diretório {}: {error}",
-                        parent.display()
-                    ),
-                    Some(&attempt_log_path),
-                    Some(&target_dir),
-                )
-            })?;
-        }
-
-        fs::rename(&temporary_destination, &destination).map_err(|error| {
-            log_and_emit_update_error(
-                &app,
-                &game_id,
-                "applyDownloadedFile",
-                "Aplicar arquivo baixado",
-                format!(
-                    "Não foi possível aplicar update em {}: {error}",
-                    destination.display()
-                ),
-                Some(&attempt_log_path),
-                Some(&target_dir),
-            )
         })?;
-
-        updated_files += 1;
-        downloaded_bytes += downloaded_size;
     }
 
     append_runner_log(
@@ -2223,36 +2593,8 @@ fn download_file_with_retry_using_client(
     let mut last_error = None;
 
     for attempt in 1..=DOWNLOAD_RETRY_ATTEMPTS {
-        if let Some((app, game_id, remote_path)) = log_context {
-            let _ = append_runner_log(
-                app,
-                game_id,
-                &[
-                    "remote_update_download_attempt=true".to_string(),
-                    format!("download_attempt={attempt}"),
-                    format!("download_max_attempts={DOWNLOAD_RETRY_ATTEMPTS}"),
-                    format!("current_file={remote_path}"),
-                    format!("download_url={url}"),
-                ],
-            );
-        }
-
         match download_file_once(client, url, destination) {
-            Ok(()) => {
-                if let Some((app, game_id, remote_path)) = log_context {
-                    let _ = append_runner_log(
-                        app,
-                        game_id,
-                        &[
-                            "remote_update_download_success=true".to_string(),
-                            format!("download_attempt={attempt}"),
-                            format!("current_file={remote_path}"),
-                        ],
-                    );
-                }
-
-                return Ok(());
-            }
+            Ok(()) => return Ok(()),
             Err(error) => {
                 let _ = fs::remove_file(destination.with_extension("download"));
                 let _ = fs::remove_file(destination);
@@ -2266,6 +2608,7 @@ fn download_file_with_retry_using_client(
                             format!("download_attempt={attempt}"),
                             format!("download_max_attempts={DOWNLOAD_RETRY_ATTEMPTS}"),
                             format!("current_file={remote_path}"),
+                            format!("download_url={url}"),
                             format!("download_error={error}"),
                         ],
                     );

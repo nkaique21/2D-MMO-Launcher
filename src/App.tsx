@@ -154,6 +154,8 @@ function formatUpdateStatus(status: string) {
   if (status === 'manifest') return 'Manifesto';
   if (status === 'checking') return 'Verificando';
   if (status === 'downloading') return 'Baixando';
+  if (status === 'validating') return 'Validando';
+  if (status === 'applying') return 'Aplicando';
   if (status === 'error') return 'Erro';
   if (status === 'done') return 'Concluído';
 
@@ -174,9 +176,11 @@ const remoteUpdateStages: UpdateStageDefinition[] = [
   { id: 'decodeRemoteManifest', label: 'Decodificar' },
   { id: 'buildFileList', label: 'Lista de arquivos' },
   { id: 'checkingFiles', label: 'Verificar arquivos' },
+  { id: 'planUpdate', label: 'Plano de update' },
+  { id: 'prepareStagingDir', label: 'Preparar staging' },
   { id: 'downloadingFiles', label: 'Baixar divergentes' },
-  { id: 'validateDownloadedFile', label: 'Validar download' },
-  { id: 'applyDownloadedFile', label: 'Aplicar arquivos' },
+  { id: 'validateStagedFiles', label: 'Validar staging' },
+  { id: 'applyStagedFiles', label: 'Aplicar arquivos' },
   { id: 'done', label: 'Concluído' },
 ];
 
@@ -206,6 +210,8 @@ function getUpdateStageIndex(progress: GameUpdateProgress | null) {
   if (progress.status === 'manifest') return remoteUpdateStages.findIndex((stage) => stage.id === 'downloadRemoteManifest');
   if (progress.status === 'checking') return remoteUpdateStages.findIndex((stage) => stage.id === 'checkingFiles');
   if (progress.status === 'downloading') return remoteUpdateStages.findIndex((stage) => stage.id === 'downloadingFiles');
+  if (progress.status === 'validating') return remoteUpdateStages.findIndex((stage) => stage.id === 'validateStagedFiles');
+  if (progress.status === 'applying') return remoteUpdateStages.findIndex((stage) => stage.id === 'applyStagedFiles');
   if (progress.status === 'done') return remoteUpdateStages.length - 1;
 
   return 0;

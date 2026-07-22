@@ -64,6 +64,7 @@ export type UpdateConfig = {
   manifestFormat?: string;
   targetDir?: string;
   targetDirBase?: string;
+  maxConcurrentDownloads?: number;
 };
 
 export type GameInstall = {

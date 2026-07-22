@@ -52,6 +52,7 @@
     "manifestUrl": "https://dw.ravenquest.io/ravenquest/checksums.txt.gz",
     "manifestFormat": "ravenquestZlib",
     "targetDir": "drive_c/Program Files (x86)/Tavernlight Games/RavenQuest",
-    "targetDirBase": "compatPrefix"
+    "targetDirBase": "compatPrefix",
+    "maxConcurrentDownloads": 8
   }
 }
