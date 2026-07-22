@@ -1343,9 +1343,9 @@ function App() {
                   <button className="text-lg text-white/40 hover:text-white" onClick={() => setIsSettingsOpen(false)} type="button">×</button>
                 </div>
                 <label className="mt-4 block text-xs font-bold text-white/65">Runner
-                  <select className="mt-2 w-full rounded-xl border border-white/10 bg-black/35 px-3 py-3 text-sm text-white outline-none focus:border-purple-300/40" onChange={(event) => setSettingsRunner(event.target.value)} value={settingsRunner}>
-                    <option value="">Padrão do manifesto ({formatRunner(selectedGame.launch.runner)})</option>
-                    {runners.filter((runner) => runner.status === 'available').map((runner) => <option key={runner.id} value={runner.id}>{runner.label} • {runner.source}</option>)}
+                  <select className="mt-2 w-full rounded-xl border border-white/10 bg-[#11111b] px-3 py-3 text-sm text-white [color-scheme:dark] outline-none focus:border-purple-300/40" onChange={(event) => setSettingsRunner(event.target.value)} value={settingsRunner}>
+                    <option className="bg-[#11111b] text-white" value="">Padrão do manifesto ({formatRunner(selectedGame.launch.runner)})</option>
+                    {runners.filter((runner) => runner.status === 'available').map((runner) => <option className="bg-[#11111b] text-white" key={runner.id} value={runner.id}>{runner.label} • {runner.source}</option>)}
                   </select>
                 </label>
                 <div className="mt-4 space-y-3">
