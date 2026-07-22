@@ -26,6 +26,9 @@
     "executable": "abaldar.exe",
     "args": []
   },
+  "verification": {
+    "requiredFiles": ["abaldar.exe", "libEGL.dll", "libGLESv2.dll"]
+  },
   "update": {
     "strategy": "manual"
   }

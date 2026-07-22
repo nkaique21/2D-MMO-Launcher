@@ -47,6 +47,9 @@
       "required": true
     }
   },
+  "verification": {
+    "requiredFiles": []
+  },
   "update": {
     "strategy": "remoteManifest",
     "manifestUrl": "https://dw.ravenquest.io/ravenquest/checksums.txt.gz",

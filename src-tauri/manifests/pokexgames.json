@@ -26,6 +26,9 @@
     "executable": "pxgme-linux",
     "args": []
   },
+  "verification": {
+    "requiredFiles": ["pxgme-linux"]
+  },
   "update": {
     "strategy": "manual"
   }

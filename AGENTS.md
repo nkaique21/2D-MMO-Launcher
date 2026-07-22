@@ -435,6 +435,11 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - Validação real do Archlight: o usuário confirmou download, extração e abertura do jogo. A instalação foi registrada em `/home/kaiquelb/.local/share/dev.kaiquelb.2d-mmo-launcher/games/archlight`; o `runner.log` confirmou resolução para `system-umu-run` (`/usr/bin/umu-run`), prefixo isolado em `compat-data/archlight/proton`, execução com `UMU-Proton-10.0-4`, PID iniciado e reabertura posterior pelo botão `Jogar`. `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml` e `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passaram.
 - A entrada de catálogo do Zezenia foi removida e substituída pelo PokeMMO (`id: "pokemmo"`). O manifesto usa o endpoint oficial `https://pokemmo.com/download_file/1/`, que redireciona para o ZIP Linux atual de aproximadamente 96 MB. O pacote não possui pasta superior e usa `PokeMMO.sh` como entrada nativa; o script exige o working directory dos arquivos e inicia `PokeMMO.exe` como classpath Java. O método `archive` inicia automaticamente após instalar e o backend garante permissão executável ao script.
 - Validação real do PokeMMO: o usuário confirmou que ele apareceu no catálogo, baixou, extraiu e abriu. A instalação foi registrada em `/home/kaiquelb/.local/share/dev.kaiquelb.2d-mmo-launcher/games/pokemmo`; o `runner.log` confirmou JVM com `-Xmx384M`, OpenGL/Mesa inicializado, carregamento da interface e encerramento normal com código `0`. O sistema testado tinha `/usr/bin/java` disponível. `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml` e `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passaram.
+- A ação `Verificar arquivos` agora é funcional e genérica. O manifesto aceita `verification.requiredFiles` opcional; o comando Tauri `verify_game_install(gameId)` confere a pasta registrada, resolve o executável efetivo e verifica os caminhos obrigatórios relativos à instalação, retornando resultado estruturado para a UI.
+- O executável efetivo respeita o fluxo real de lançamento: em jogos comuns usa `launch.executable`; quando `launch.battlEye.launchMode: "main"`, como no RavenQuest, verifica o executável do BattlEye resolvido pela base configurada (`compatPrefix`), portanto valida `ravenquest_dx_BE.exe` em vez de `launcher.exe`.
+- A verificação não baixa, apaga nem substitui arquivos. Ela apenas diagnostica e informa `repairStrategy`: `remoteManifest` quando há reparo remoto disponível, depois `archive`, `windowsInstaller` ou `existing` conforme os métodos declarados. A reparação permanece uma ação explícita separada para evitar efeitos destrutivos inesperados.
+- Arquivos obrigatórios mínimos foram declarados nos manifestos atuais: PokeMMO (`PokeMMO.sh`, `PokeMMO.exe`, `data`, `roms`), PokeXGames (`pxgme-linux`), Grand Line Adventures (`glaclient-linux`), Medivia (`medivia`) e Archlight (`abaldar.exe`, `libEGL.dll`, `libGLESv2.dll`). O RavenQuest usa lista adicional vazia porque o executável BattlEye efetivo já é verificado e o manifesto remoto completo continua sendo a fonte de integridade aprofundada.
+- O drawer mostra estado íntegro ou de atenção, pasta, executável efetivo, estratégia de reparo, problemas e arquivos ausentes. Teste interativo no Tauri confirmou estado íntegro no PokeMMO e no RavenQuest, incluindo o caminho terminado em `ravenquest_dx_BE.exe`. Dois testes Rust cobrem arquivo obrigatório ausente e pasta de instalação ausente. Validações: `cargo test --manifest-path src-tauri/Cargo.toml` (2 testes), `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml`, `cargo fmt` e `git diff --check` passaram.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -445,9 +450,9 @@ Próximo passo recomendado para desenvolvimento:
    - Definir `launch.executable` para outros jogos nativos quando houver executável conhecido.
    - Avaliar se o manifesto precisa de campos adicionais para validação de pasta, executáveis alternativos ou argumentos por plataforma.
 
-2. **Validar instalações registradas**
-   - Preparar validação por manifesto para confirmar executável/estrutura esperada.
-   - Fazer `Verificar arquivos` indicar se a pasta registrada ainda existe e se contém o executável esperado quando esse dado estiver modelado.
+2. **Evoluir reparo das instalações**
+   - Conectar o diagnóstico de `Verificar arquivos` a uma ação explícita de reparo para estratégias suportadas, começando por `remoteManifest` sem disparar downloads automaticamente durante a verificação.
+   - Avaliar checksums opcionais por manifesto para jogos sem manifesto remoto; manter `requiredFiles` como checagem estrutural rápida.
 
 3. **Camada de runners**
    - Validar o botão `Baixar instalador Windows` do RavenQuest em ambiente com Proton/UMU disponível.

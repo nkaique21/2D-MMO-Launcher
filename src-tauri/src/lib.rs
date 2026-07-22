@@ -29,6 +29,15 @@ struct GameManifest {
     installation: InstallationConfig,
     launch: LaunchConfig,
     update: UpdateConfig,
+    #[serde(default)]
+    verification: VerificationConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerificationConfig {
+    #[serde(default)]
+    required_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +203,20 @@ struct LaunchResult {
     command: String,
     working_dir: String,
     log_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallVerificationResult {
+    game_id: String,
+    valid: bool,
+    install_path: String,
+    install_path_exists: bool,
+    executable_path: Option<String>,
+    executable_exists: bool,
+    missing_files: Vec<String>,
+    issues: Vec<String>,
+    repair_strategy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,6 +461,70 @@ fn configured_path_for_install(
         configured_base_path(app, game_id, install_path, base, default_runner)?
             .join(configured_path),
     )
+}
+
+fn repair_strategy_for_manifest(manifest: &GameManifest) -> Option<String> {
+    if manifest.update.strategy == "remoteManifest" {
+        return Some("remoteManifest".to_string());
+    }
+
+    for strategy in ["archive", "windowsInstaller", "existing"] {
+        if manifest
+            .installation
+            .methods
+            .iter()
+            .any(|method| method.kind == strategy)
+        {
+            return Some(strategy.to_string());
+        }
+    }
+
+    None
+}
+
+fn effective_executable_path_for_verification(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    manifest: &GameManifest,
+    install_path: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if battl_eye_replaces_main_process(manifest) {
+        let Some(battl_eye) = manifest.launch.battl_eye.as_ref() else {
+            return Ok(None);
+        };
+
+        return configured_path_for_install(
+            app,
+            game_id,
+            install_path,
+            &battl_eye.executable,
+            battl_eye.path_base.as_deref(),
+            &manifest.launch.runner,
+        )
+        .map(Some);
+    }
+
+    Ok(manifest
+        .launch
+        .executable
+        .as_deref()
+        .map(|executable| command_path_for_install(install_path, executable)))
+}
+
+fn missing_required_files(
+    install_path: &Path,
+    install_path_exists: bool,
+    required_files: &[String],
+) -> Vec<String> {
+    if !install_path_exists {
+        return required_files.to_vec();
+    }
+
+    required_files
+        .iter()
+        .filter(|required_file| !command_path_for_install(install_path, required_file).exists())
+        .cloned()
+        .collect()
 }
 
 fn expand_manifest_env_value(value: &str) -> String {
@@ -3428,6 +3515,112 @@ fn list_games() -> Result<Vec<GameManifest>, String> {
 }
 
 #[tauri::command]
+fn verify_game_install(
+    app: tauri::AppHandle,
+    game_id: String,
+) -> Result<InstallVerificationResult, String> {
+    let game_id = game_id.trim().to_string();
+    let manifest = get_manifest(&game_id)?;
+    let connection = open_database(&app)?;
+    let install = get_install(&connection, &game_id)?;
+    let install_path = PathBuf::from(&install.install_path);
+    let install_path_exists = install_path.is_dir();
+    let executable_path =
+        effective_executable_path_for_verification(&app, &game_id, &manifest, &install_path)?;
+    let executable_exists = executable_path.as_ref().is_some_and(|path| path.is_file());
+    let mut issues = Vec::new();
+    let missing_files = missing_required_files(
+        &install_path,
+        install_path_exists,
+        &manifest.verification.required_files,
+    );
+
+    if !install_path_exists {
+        issues.push(format!(
+            "A pasta registrada não existe mais: {}",
+            install_path.display()
+        ));
+    }
+
+    if executable_path.is_none() {
+        issues.push("O manifesto não define um executável verificável.".to_string());
+    } else if !executable_exists {
+        issues.push(format!(
+            "O executável principal não foi encontrado: {}",
+            executable_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default()
+        ));
+    }
+
+    if !missing_files.is_empty() {
+        issues.push(format!(
+            "{} arquivo(s) obrigatório(s) estão ausentes.",
+            missing_files.len()
+        ));
+    }
+
+    let valid = install_path_exists && executable_exists && missing_files.is_empty();
+
+    Ok(InstallVerificationResult {
+        game_id,
+        valid,
+        install_path: install_path.to_string_lossy().to_string(),
+        install_path_exists,
+        executable_path: executable_path.map(|path| path.to_string_lossy().to_string()),
+        executable_exists,
+        missing_files,
+        issues,
+        repair_strategy: repair_strategy_for_manifest(&manifest),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::missing_required_files;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn detects_only_missing_required_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("relógio do sistema válido")
+            .as_nanos();
+        let install_path = std::env::temp_dir().join(format!(
+            "two-d-mmo-launcher-verification-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(install_path.join("data")).expect("criar instalação temporária");
+        fs::write(install_path.join("game.bin"), b"test").expect("criar executável de teste");
+        let required_files = vec![
+            "game.bin".to_string(),
+            "data".to_string(),
+            "missing.pak".to_string(),
+        ];
+
+        let missing = missing_required_files(&install_path, true, &required_files);
+
+        assert_eq!(missing, vec!["missing.pak"]);
+        fs::remove_dir_all(install_path).expect("remover instalação temporária");
+    }
+
+    #[test]
+    fn reports_all_required_files_when_install_path_is_missing() {
+        let required_files = vec!["game.bin".to_string(), "data".to_string()];
+
+        let missing = missing_required_files(
+            &std::env::temp_dir().join("nonexistent-two-d-mmo-install"),
+            false,
+            &required_files,
+        );
+
+        assert_eq!(missing, required_files);
+    }
+}
+
+#[tauri::command]
 fn list_installs(app: tauri::AppHandle) -> Result<Vec<GameInstall>, String> {
     let connection = open_database(&app)?;
     let mut statement = connection
@@ -4393,6 +4586,7 @@ pub fn run() {
             get_game_update_progress,
             install_game_from_remote_manifest,
             run_game_remote_update,
+            verify_game_install,
             open_install_folder,
             remove_install,
             launch_game

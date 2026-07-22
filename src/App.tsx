@@ -14,8 +14,9 @@ import {
   runGameRemoteUpdate,
   getGameUpdateProgress,
   installGameFromRemoteManifest,
+  verifyGameInstall,
 } from './lib/tauri';
-import type { GameInstall, GameManifest, GameUpdateProgress, RunnerInfo } from './types/manifest';
+import type { GameInstall, GameManifest, GameUpdateProgress, InstallVerificationResult, RunnerInfo } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
 
@@ -320,6 +321,7 @@ function App() {
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [installFlow, setInstallFlow] = useState<InstallFlowProgress | null>(null);
+  const [verificationResult, setVerificationResult] = useState<InstallVerificationResult | null>(null);
   const [reloadSignal, setReloadSignal] = useState(0);
 
   useEffect(() => {
@@ -689,6 +691,26 @@ function App() {
   async function handleSecondaryAction(action: SecondaryAction) {
     setActionError(null);
     setActionMessage(null);
+
+    if (action.type === 'installedAction' && action.id === 'verify-files') {
+      setPendingActionId(action.id);
+      setVerificationResult(null);
+
+      try {
+        const result = await verifyGameInstall(selectedGame.id);
+
+        setVerificationResult(result);
+        setActionMessage(result.valid
+          ? 'Instalação verificada: arquivos essenciais encontrados.'
+          : `Verificação encontrou ${result.issues.length} problema(s). Consulte os detalhes.`);
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPendingActionId(null);
+      }
+
+      return;
+    }
 
     if (action.type === 'installMethod' && action.installMethodType === 'existing') {
       setPendingActionId(action.id);
@@ -1228,6 +1250,33 @@ function App() {
                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/25"><div className="h-full bg-gradient-to-r from-sky-300 to-purple-300" style={{ width: `${updatePercent}%` }} /></div>
                 <div className="mt-4 space-y-1 break-all rounded-xl bg-black/20 p-3 leading-5 text-white/65">
                   <p><strong>Etapa:</strong> {activeUpdateProgress.stageLabel ?? '—'}</p><p><strong>Stage:</strong> {activeUpdateProgress.stage ?? '—'}</p><p><strong>Evento:</strong> {lastUpdateEventLabel}</p><p><strong>Fonte:</strong> {updateProgressSource ?? 'aguardando'}</p><p><strong>Arquivo:</strong> {activeUpdateProgress.currentFile ?? '—'}</p><p><strong>Alvo:</strong> {activeUpdateProgress.targetDir ?? '—'}</p><p><strong>Log:</strong> {activeUpdateProgress.logPath ?? '—'}</p>
+                </div>
+              </section>
+            )}
+            {verificationResult?.gameId === selectedGame.id && (
+              <section className={`mt-5 rounded-2xl border p-4 text-xs ${verificationResult.valid
+                ? 'border-emerald-300/20 bg-emerald-500/[0.06]'
+                : 'border-amber-300/20 bg-amber-500/[0.06]'
+              }`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className={`font-black uppercase tracking-[0.16em] ${verificationResult.valid ? 'text-emerald-200' : 'text-amber-200'}`}>
+                      {verificationResult.valid ? 'Instalação íntegra' : 'Instalação requer atenção'}
+                    </p>
+                    <p className="mt-1 text-white/65">
+                      {verificationResult.valid
+                        ? 'A pasta, o executável e os arquivos obrigatórios foram encontrados.'
+                        : verificationResult.issues[0] ?? 'Foram encontrados problemas na instalação.'}
+                    </p>
+                  </div>
+                  <strong className="text-lg">{verificationResult.valid ? '✓' : '!'}</strong>
+                </div>
+                <div className="mt-3 space-y-1 break-all rounded-xl bg-black/20 p-3 leading-5 text-white/60">
+                  <p><strong>Pasta:</strong> {verificationResult.installPath}</p>
+                  <p><strong>Executável:</strong> {verificationResult.executablePath ?? 'não definido'}</p>
+                  <p><strong>Reparo:</strong> {verificationResult.repairStrategy ?? 'manual'}</p>
+                  {verificationResult.issues.map((issue) => <p key={issue}>• {issue}</p>)}
+                  {verificationResult.missingFiles.map((file) => <p key={file}>• Ausente: {file}</p>)}
                 </div>
               </section>
             )}

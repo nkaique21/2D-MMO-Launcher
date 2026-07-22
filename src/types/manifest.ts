@@ -6,6 +6,11 @@ export type GameManifest = {
   installation: InstallationConfig;
   launch: LaunchConfig;
   update: UpdateConfig;
+  verification?: VerificationConfig;
+};
+
+export type VerificationConfig = {
+  requiredFiles?: string[];
 };
 
 export type ManifestAssets = {
@@ -84,6 +89,18 @@ export type LaunchResult = {
   command: string;
   workingDir: string;
   logPath: string | null;
+};
+
+export type InstallVerificationResult = {
+  gameId: string;
+  valid: boolean;
+  installPath: string;
+  installPathExists: boolean;
+  executablePath: string | null;
+  executableExists: boolean;
+  missingFiles: string[];
+  issues: string[];
+  repairStrategy: 'archive' | 'remoteManifest' | 'windowsInstaller' | 'existing' | string | null;
 };
 
 export type GameUpdateResult = {

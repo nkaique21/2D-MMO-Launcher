@@ -26,6 +26,9 @@
     "executable": "PokeMMO.sh",
     "args": []
   },
+  "verification": {
+    "requiredFiles": ["PokeMMO.sh", "PokeMMO.exe", "data", "roms"]
+  },
   "update": {
     "strategy": "manual"
   }

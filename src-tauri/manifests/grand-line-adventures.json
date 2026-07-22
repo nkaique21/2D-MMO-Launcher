@@ -30,6 +30,9 @@
     "executable": "glaclient-linux",
     "args": []
   },
+  "verification": {
+    "requiredFiles": ["glaclient-linux"]
+  },
   "update": {
     "strategy": "manual"
   }

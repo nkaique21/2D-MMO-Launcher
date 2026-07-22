@@ -27,6 +27,9 @@
     "executable": "medivia",
     "args": []
   },
+  "verification": {
+    "requiredFiles": ["medivia"]
+  },
   "update": {
     "strategy": "manual"
   }
