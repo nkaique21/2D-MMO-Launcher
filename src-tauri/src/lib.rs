@@ -220,6 +220,25 @@ struct GameUpdateProgress {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameInstallFlowProgress {
+    game_id: String,
+    status: String,
+    message: String,
+}
+
+fn emit_install_flow_progress(app: &tauri::AppHandle, game_id: &str, status: &str, message: &str) {
+    let _ = app.emit(
+        "game-install-flow",
+        GameInstallFlowProgress {
+            game_id: game_id.to_string(),
+            status: status.to_string(),
+            message: message.to_string(),
+        },
+    );
+}
+
 fn manifests_dir() -> Result<PathBuf, String> {
     let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
 
@@ -643,6 +662,36 @@ fn reconcile_registered_install_path(
     install: GameInstall,
 ) -> Result<GameInstall, String> {
     let registered_install_path = PathBuf::from(&install.install_path);
+
+    if battl_eye_replaces_main_process(manifest) {
+        let Some(battl_eye) = manifest.launch.battl_eye.as_ref() else {
+            return Ok(install);
+        };
+        let battl_eye_path = configured_path_for_install(
+            app,
+            game_id,
+            &registered_install_path,
+            &battl_eye.executable,
+            battl_eye.path_base.as_deref(),
+            &manifest.launch.runner,
+        )?;
+
+        append_runner_log(
+            app,
+            game_id,
+            &[
+                "install_path_reconcile_skipped=main_battl_eye_launch".to_string(),
+                format!("effective_launch_executable={}", battl_eye_path.display()),
+                format!(
+                    "effective_launch_executable_exists={}",
+                    battl_eye_path.exists()
+                ),
+            ],
+        )?;
+
+        return Ok(install);
+    }
+
     let Some((resolved_install_path, command_path)) =
         discover_manifest_install_path(app, game_id, manifest, Some(&registered_install_path))?
     else {
@@ -1576,16 +1625,30 @@ fn remote_update_staging_dir(app: &tauri::AppHandle, game_id: &str) -> Result<Pa
     let app_data_dir = app.path().app_data_dir().map_err(|error| {
         format!("Não foi possível resolver o diretório de dados do app: {error}")
     })?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "unknown-time".to_string());
-
-    Ok(app_data_dir
+    let game_updates_dir = app_data_dir
         .join("updates")
-        .join(sanitize_path_segment(game_id))
-        .join(timestamp)
-        .join("staging"))
+        .join(sanitize_path_segment(game_id));
+    let stable_staging_dir = game_updates_dir.join("staging");
+
+    if stable_staging_dir.exists() {
+        return Ok(stable_staging_dir);
+    }
+
+    let latest_legacy_staging = fs::read_dir(&game_updates_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let timestamp = entry.file_name().to_string_lossy().parse::<u64>().ok()?;
+            let staging = entry.path().join("staging");
+
+            staging.is_dir().then_some((timestamp, staging))
+        })
+        .max_by_key(|(timestamp, _)| *timestamp)
+        .map(|(_, staging)| staging);
+
+    Ok(latest_legacy_staging.unwrap_or(stable_staging_dir))
 }
 
 fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
@@ -1639,6 +1702,22 @@ fn download_planned_files_to_staging(
 ) -> Result<u64, String> {
     if planned_files.is_empty() {
         return Ok(0);
+    }
+
+    for planned_file in planned_files {
+        let parent = planned_file.staging_destination.parent().ok_or_else(|| {
+            format!(
+                "Destino de staging inválido: {}",
+                planned_file.staging_destination.display()
+            )
+        })?;
+
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Não foi possível preparar diretório de staging {}: {error}",
+                parent.display()
+            )
+        })?;
     }
 
     let worker_count = concurrency.min(planned_files.len()).max(1);
@@ -1698,34 +1777,43 @@ fn download_planned_files_to_staging(
                     break;
                 };
 
-                let result = download_file_with_retry_using_client(
-                    &client,
-                    &planned_file.url,
-                    &planned_file.staging_destination,
-                    Some((&app, &game_id, &planned_file.remote_path)),
-                )
-                .and_then(|_| {
-                    match local_file_matches(
-                        &planned_file.staging_destination,
-                        &planned_file.expected,
-                    )? {
-                        true => Ok(()),
-                        false => Err(format!(
-                            "Arquivo em staging falhou na validação: {}",
-                            planned_file.remote_path
-                        )),
-                    }
-                })
-                .and_then(|_| {
-                    fs::metadata(&planned_file.staging_destination)
-                        .map(|metadata| (planned_file.remote_path.clone(), metadata.len()))
-                        .map_err(|error| {
-                            format!(
-                                "Não foi possível inspecionar arquivo em staging {}: {error}",
-                                planned_file.staging_destination.display()
-                            )
-                        })
-                });
+                let staged_file_is_valid =
+                    local_file_matches(&planned_file.staging_destination, &planned_file.expected);
+                let result = staged_file_is_valid
+                    .and_then(|matches| {
+                        if matches {
+                            return Ok(());
+                        }
+
+                        download_file_with_retry_using_client(
+                            &client,
+                            &planned_file.url,
+                            &planned_file.staging_destination,
+                            Some((&app, &game_id, &planned_file.remote_path)),
+                        )
+                    })
+                    .and_then(|_| {
+                        match local_file_matches(
+                            &planned_file.staging_destination,
+                            &planned_file.expected,
+                        )? {
+                            true => Ok(()),
+                            false => Err(format!(
+                                "Arquivo em staging falhou na validação: {}",
+                                planned_file.remote_path
+                            )),
+                        }
+                    })
+                    .and_then(|_| {
+                        fs::metadata(&planned_file.staging_destination)
+                            .map(|metadata| (planned_file.remote_path.clone(), metadata.len()))
+                            .map_err(|error| {
+                                format!(
+                                    "Não foi possível inspecionar arquivo em staging {}: {error}",
+                                    planned_file.staging_destination.display()
+                                )
+                            })
+                    });
 
                 let should_stop = result_tx.send(result).is_err();
                 if should_stop {
@@ -2240,17 +2328,6 @@ fn run_remote_manifest_update(
             None,
         );
 
-        remove_dir_if_exists(&staging_dir).map_err(|error| {
-            log_and_emit_update_error(
-                &app,
-                &game_id,
-                "prepareStagingDir",
-                "Preparar staging do update",
-                error,
-                Some(&attempt_log_path),
-                Some(&target_dir),
-            )
-        })?;
         fs::create_dir_all(&staging_dir).map_err(|error| {
             log_and_emit_update_error(
                 &app,
@@ -2525,7 +2602,7 @@ fn launch_install(
 
     let command_path = command_path_for_install(&install_path, executable);
 
-    if !command_path.exists() {
+    if !command_path.exists() && !battl_eye_replaces_main_process(manifest) {
         return Err(format!(
             "Executável não encontrado para {}: {}",
             manifest.name,
@@ -2647,7 +2724,7 @@ fn download_file_with_retry_using_client(
         match download_file_once(client, url, destination) {
             Ok(()) => return Ok(()),
             Err(error) => {
-                let _ = fs::remove_file(destination.with_extension("download"));
+                let _ = fs::remove_file(temporary_download_path(destination));
                 let _ = fs::remove_file(destination);
 
                 if let Some((app, game_id, remote_path)) = log_context {
@@ -2682,6 +2759,15 @@ fn download_file_with_retry_using_client(
     ))
 }
 
+fn temporary_download_path(destination: &Path) -> PathBuf {
+    let temporary_name = destination
+        .file_name()
+        .map(|file_name| format!("{}.download", file_name.to_string_lossy()))
+        .unwrap_or_else(|| "download.tmp".to_string());
+
+    destination.with_file_name(temporary_name)
+}
+
 fn download_file_once(
     client: &reqwest::blocking::Client,
     url: &str,
@@ -2704,7 +2790,7 @@ fn download_file_once(
         .map_err(|error| format!("Não foi possível baixar {url}: {error}"))?
         .error_for_status()
         .map_err(|error| format!("Servidor retornou erro ao baixar {url}: {error}"))?;
-    let temporary_destination = destination.with_extension("download");
+    let temporary_destination = temporary_download_path(destination);
     let mut output = fs::File::create(&temporary_destination).map_err(|error| {
         format!(
             "Não foi possível criar o arquivo temporário {}: {error}",
@@ -2880,6 +2966,12 @@ fn log_installer_exit_and_reconcile(
         };
 
         let _ = append_runner_log(&app, &game_id, &lines);
+        emit_install_flow_progress(
+            &app,
+            &game_id,
+            "reconciling",
+            "Instalador concluído. Localizando os arquivos do jogo...",
+        );
 
         let install = match reconcile_or_register_install_path(&app, &game_id, &manifest) {
             Ok(install) => install,
@@ -2889,12 +2981,102 @@ fn log_installer_exit_and_reconcile(
                     &game_id,
                     &[format!("install_reconcile_error={error}")],
                 );
+                emit_install_flow_progress(
+                    &app,
+                    &game_id,
+                    "error",
+                    &format!("Não foi possível localizar a instalação: {error}"),
+                );
                 None
             }
         };
 
         if should_launch_after_install(&manifest) {
             if let Some(install) = install {
+                if manifest.update.strategy == "remoteManifest" {
+                    emit_install_flow_progress(
+                        &app,
+                        &game_id,
+                        "updating",
+                        "Instalação localizada. Atualizando os arquivos antes de abrir...",
+                    );
+                    let update_log_path = match append_runner_log(
+                        &app,
+                        &game_id,
+                        &[
+                            "action=run_game_remote_update".to_string(),
+                            "update_trigger=after_install".to_string(),
+                            format!("game_id={game_id}"),
+                        ],
+                    ) {
+                        Ok(log_path) => log_path,
+                        Err(error) => {
+                            let _ = append_runner_log(
+                                &app,
+                                &game_id,
+                                &[format!("update_after_install_error={error}")],
+                            );
+                            emit_install_flow_progress(
+                                &app,
+                                &game_id,
+                                "error",
+                                &format!("Não foi possível preparar o update: {error}"),
+                            );
+                            return;
+                        }
+                    };
+                    let install_path = PathBuf::from(&install.install_path);
+
+                    match run_remote_manifest_update(
+                        app.clone(),
+                        game_id.clone(),
+                        manifest.clone(),
+                        install_path,
+                        update_log_path,
+                    ) {
+                        Ok(result) => {
+                            let _ = append_runner_log(
+                                &app,
+                                &game_id,
+                                &[
+                                    "update_after_install_completed=true".to_string(),
+                                    format!(
+                                        "update_after_install_updated_files={}",
+                                        result.updated_files
+                                    ),
+                                    format!(
+                                        "update_after_install_skipped_files={}",
+                                        result.skipped_files
+                                    ),
+                                ],
+                            );
+                        }
+                        Err(error) => {
+                            let _ = append_runner_log(
+                                &app,
+                                &game_id,
+                                &[
+                                    "launch_after_install_skipped=update_failed".to_string(),
+                                    format!("update_after_install_error={error}"),
+                                ],
+                            );
+                            emit_install_flow_progress(
+                                &app,
+                                &game_id,
+                                "error",
+                                &format!("A atualização falhou: {error}"),
+                            );
+                            return;
+                        }
+                    }
+                }
+
+                emit_install_flow_progress(
+                    &app,
+                    &game_id,
+                    "launching",
+                    "Arquivos prontos. Iniciando o jogo...",
+                );
                 match launch_install(
                     &app,
                     &game_id,
@@ -2912,12 +3094,24 @@ fn log_installer_exit_and_reconcile(
                                 format!("launch_after_install_command={}", result.command),
                             ],
                         );
+                        emit_install_flow_progress(
+                            &app,
+                            &game_id,
+                            "done",
+                            "Instalação e atualização concluídas. Jogo iniciado.",
+                        );
                     }
                     Err(error) => {
                         let _ = append_runner_log(
                             &app,
                             &game_id,
                             &[format!("launch_after_install_error={error}")],
+                        );
+                        emit_install_flow_progress(
+                            &app,
+                            &game_id,
+                            "error",
+                            &format!("Os arquivos ficaram prontos, mas o jogo não abriu: {error}"),
                         );
                     }
                 }
@@ -2926,6 +3120,12 @@ fn log_installer_exit_and_reconcile(
                     &app,
                     &game_id,
                     &["launch_after_install_skipped=no_install_found".to_string()],
+                );
+                emit_install_flow_progress(
+                    &app,
+                    &game_id,
+                    "error",
+                    "O instalador terminou, mas a pasta do jogo não foi encontrada.",
                 );
             }
         }
@@ -3225,6 +3425,15 @@ fn download_and_run_installer(
         ],
     )?;
 
+    if should_launch_after_install(&manifest) {
+        emit_install_flow_progress(
+            &app,
+            &game_id,
+            "installing",
+            "Instalador aberto. Conclua a instalação para continuar automaticamente.",
+        );
+    }
+
     if let Some(relative_install_path) = installer.install_path.as_deref() {
         let compat_prefix = installer
             .compat_prefix
@@ -3411,6 +3620,105 @@ fn get_game_update_progress(
     Ok(parse_latest_update_progress_from_log(
         &game_id, &log_path, &log_text,
     ))
+}
+
+#[tauri::command]
+async fn install_game_from_remote_manifest(
+    app: tauri::AppHandle,
+    game_id: String,
+) -> Result<LaunchResult, String> {
+    let game_id = game_id.trim().to_string();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    let manifest = get_manifest(&game_id)?;
+
+    if manifest.update.strategy != "remoteManifest" {
+        return Err(format!(
+            "{} não possui instalação gerenciada por remoteManifest.",
+            manifest.name
+        ));
+    }
+
+    emit_install_flow_progress(
+        &app,
+        &game_id,
+        "preparing",
+        "Preparando a pasta gerenciada do jogo...",
+    );
+
+    let prefix_root = managed_windows_prefix_dir(&app, &game_id, &manifest.launch.runner)?;
+    let target_dir = remote_update_target_dir(&app, &game_id, &manifest, &prefix_root)?;
+    fs::create_dir_all(&target_dir).map_err(|error| {
+        format!(
+            "Não foi possível criar a instalação gerenciada em {}: {error}",
+            target_dir.display()
+        )
+    })?;
+
+    let attempt_log_path = append_runner_log(
+        &app,
+        &game_id,
+        &[
+            "action=run_game_remote_update".to_string(),
+            "update_trigger=managed_install".to_string(),
+            format!("game_id={game_id}"),
+            format!("managed_install_path={}", target_dir.display()),
+        ],
+    )?;
+
+    emit_install_flow_progress(
+        &app,
+        &game_id,
+        "updating",
+        "Baixando e validando os arquivos do jogo...",
+    );
+
+    let update_app = app.clone();
+    let update_game_id = game_id.clone();
+    let update_manifest = manifest.clone();
+    let update_install_path = target_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        run_remote_manifest_update(
+            update_app,
+            update_game_id,
+            update_manifest,
+            update_install_path,
+            attempt_log_path,
+        )
+    })
+    .await
+    .map_err(|error| format!("A instalação gerenciada falhou: {error}"))??;
+
+    let connection = open_database(&app)?;
+    let install = save_install(&connection, &game_id, &target_dir.to_string_lossy(), None)?;
+    emit_install_updated(&app, &install);
+
+    emit_install_flow_progress(
+        &app,
+        &game_id,
+        "launching",
+        "Instalação concluída. Iniciando o jogo...",
+    );
+
+    let result = launch_install(
+        &app,
+        &game_id,
+        &manifest,
+        &install,
+        "action=launch_after_managed_install",
+    )?;
+
+    emit_install_flow_progress(
+        &app,
+        &game_id,
+        "done",
+        "Jogo instalado, atualizado e iniciado.",
+    );
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -3657,7 +3965,7 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
 
     let command_path = command_path_for_install(&install_path, executable);
 
-    if !command_path.exists() {
+    if !command_path.exists() && !battl_eye_replaces_main_process(&manifest) {
         return Err(log_error_message(
             &app,
             &game_id,
@@ -3741,6 +4049,7 @@ pub fn run() {
             download_and_run_installer,
             run_game_update,
             get_game_update_progress,
+            install_game_from_remote_manifest,
             run_game_remote_update,
             open_install_folder,
             remove_install,

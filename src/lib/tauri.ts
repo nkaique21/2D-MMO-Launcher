@@ -29,6 +29,10 @@ export function runGameRemoteUpdate(gameId: string) {
   return invoke<GameUpdateResult>('run_game_remote_update', { gameId });
 }
 
+export function installGameFromRemoteManifest(gameId: string) {
+  return invoke<LaunchResult>('install_game_from_remote_manifest', { gameId });
+}
+
 export function getGameUpdateProgress(gameId: string) {
   return invoke<GameUpdateProgress | null>('get_game_update_progress', { gameId });
 }

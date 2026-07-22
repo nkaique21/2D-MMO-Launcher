@@ -12,6 +12,7 @@ import {
   runGameUpdate,
   runGameRemoteUpdate,
   getGameUpdateProgress,
+  installGameFromRemoteManifest,
 } from './lib/tauri';
 import type { GameInstall, GameManifest, GameUpdateProgress, RunnerInfo } from './types/manifest';
 
@@ -42,6 +43,12 @@ type SecondaryAction = {
 type UpdateStageDefinition = {
   id: string;
   label: string;
+};
+
+type InstallFlowProgress = {
+  gameId: string;
+  status: string;
+  message: string;
 };
 
 const fallbackVisualMetadata: GameVisualMetadata = {
@@ -309,6 +316,9 @@ function App() {
   const [updateProgressSource, setUpdateProgressSource] = useState<string | null>(null);
   const [nowTimestamp, setNowTimestamp] = useState(() => Date.now());
   const [isLaunching, setIsLaunching] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [isLibraryOpen, setIsLibraryOpen] = useState(false);
+  const [installFlow, setInstallFlow] = useState<InstallFlowProgress | null>(null);
   const [reloadSignal, setReloadSignal] = useState(0);
 
   useEffect(() => {
@@ -362,6 +372,33 @@ function App() {
         return [...otherInstalls, event.payload];
       });
       setSelectedGameId(event.payload.gameId);
+    });
+
+    return () => {
+      isMounted = false;
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const unlistenPromise = listen<InstallFlowProgress>('game-install-flow', (event) => {
+      if (!isMounted) return;
+
+      setInstallFlow(event.payload);
+      setActionMessage(event.payload.message);
+
+      if (event.payload.status === 'error') {
+        setActionError(event.payload.message);
+        setPendingActionId(null);
+      }
+
+      if (event.payload.status === 'done') {
+        setActionError(null);
+        setPendingActionId(null);
+        void listInstalls().then(setInstalls);
+      }
     });
 
     return () => {
@@ -557,6 +594,29 @@ function App() {
     setActionMessage(null);
 
     if (selectedGame.status !== 'installed') {
+      if (selectedGame.update.strategy === 'remoteManifest') {
+        setPendingActionId('primary-install');
+        setInstallFlow({ gameId: selectedGame.id, status: 'preparing', message: 'Preparando instalação gerenciada...' });
+        setUpdateProgress(createPreparingUpdateProgress(selectedGame.id));
+        setUpdateProgressReceivedAt(Date.now());
+        setUpdateProgressSource('local');
+        setActionMessage('Preparando instalação automática...');
+
+        try {
+          const result = await installGameFromRemoteManifest(selectedGame.id);
+          setInstalls(await listInstalls());
+          setActionMessage(formatLaunchMessage('Jogo instalado e iniciado', result));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setActionError(message);
+          setInstallFlow({ gameId: selectedGame.id, status: 'error', message });
+        } finally {
+          setPendingActionId(null);
+        }
+
+        return;
+      }
+
       const windowsInstallerMethod = selectedGame.installation.methods.find(
         (method) => method.type === 'windowsInstaller',
       );
@@ -567,17 +627,21 @@ function App() {
       }
 
       setPendingActionId('primary-install');
+      setInstallFlow({ gameId: selectedGame.id, status: 'downloading', message: 'Baixando o instalador...' });
       setActionMessage('Baixando instalador e preparando runner...');
 
       try {
-        const result = await downloadAndRunInstaller(selectedGame.id);
+        await downloadAndRunInstaller(selectedGame.id);
         const refreshedInstalls = await listInstalls();
 
         setInstalls(refreshedInstalls);
-        setActionMessage(formatLaunchMessage('Instalador baixado e iniciado', result));
+        setActionMessage('Instalador aberto. Ao concluir, o launcher atualizará os arquivos e abrirá o jogo automaticamente.');
+
+        if (!windowsInstallerMethod.launchAfterInstall) {
+          setPendingActionId(null);
+        }
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
-      } finally {
         setPendingActionId(null);
       }
 
@@ -592,6 +656,7 @@ function App() {
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
+      setPendingActionId(null);
       setIsLaunching(false);
     }
   }
@@ -727,8 +792,8 @@ function App() {
   }
 
   return (
-    <main className="min-h-screen overflow-hidden bg-launcher-bg text-launcher-text">
-      <div className="flex min-h-screen bg-[radial-gradient(circle_at_10%_0%,rgba(139,92,246,0.22),transparent_28rem),radial-gradient(circle_at_82%_18%,rgba(14,165,233,0.12),transparent_24rem),linear-gradient(135deg,rgba(255,255,255,0.03),transparent_42%)]">
+    <main className="h-screen min-h-[560px] overflow-hidden bg-launcher-bg text-launcher-text">
+      <div className="flex h-full bg-[radial-gradient(circle_at_10%_0%,rgba(139,92,246,0.22),transparent_28rem),radial-gradient(circle_at_82%_18%,rgba(14,165,233,0.12),transparent_24rem),linear-gradient(135deg,rgba(255,255,255,0.03),transparent_42%)]">
         <aside className="flex w-[104px] flex-col items-center border-r border-white/10 bg-black/35 px-4 py-5 backdrop-blur-2xl">
           <div className="grid h-14 w-14 place-items-center rounded-[1.35rem] bg-white/10 ring-1 ring-white/15 shadow-glow">
             <span className="bg-gradient-to-br from-white to-purple-200 bg-clip-text text-lg font-black text-transparent">
@@ -774,6 +839,8 @@ function App() {
 
           <button
             className="grid h-12 w-12 place-items-center rounded-2xl border border-white/10 bg-white/[0.055] text-xl text-launcher-muted transition hover:border-purple-300/40 hover:text-white"
+            onClick={() => setIsLibraryOpen(true)}
+            title="Abrir catálogo"
             type="button"
           >
             +
@@ -781,7 +848,7 @@ function App() {
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col">
-          <header className="border-b border-white/10 bg-launcher-bg/55 px-8 pb-6 pt-5 backdrop-blur-2xl">
+          <header className="shrink-0 border-b border-white/10 bg-launcher-bg/55 px-7 py-4 backdrop-blur-2xl">
             <div className="flex items-center justify-between gap-6">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.28em] text-purple-300">
@@ -795,7 +862,7 @@ function App() {
               </div>
             </div>
 
-            <div className="mt-6 flex gap-3 overflow-x-auto pb-1">
+            <div className="hidden">
               {manifestGames.length > 0 ? (
                 manifestGames.map((game) => {
                   const isActive = game.id === selectedGame.id;
@@ -841,9 +908,9 @@ function App() {
             </div>
           </header>
 
-          <div className="grid flex-1 grid-cols-[minmax(0,1fr)_320px] gap-6 overflow-auto p-8">
-            <section className="min-w-0">
-              <article className="relative min-h-[520px] overflow-hidden rounded-[2rem] border border-white/10 bg-launcher-panel shadow-2xl shadow-black/40">
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_300px] gap-4 overflow-hidden p-5">
+            <section className="min-h-0 min-w-0">
+              <article className="relative h-full min-h-0 overflow-hidden rounded-[2rem] border border-white/10 bg-launcher-panel shadow-2xl shadow-black/40">
                 <div
                   className="absolute inset-0 bg-cover bg-center opacity-70"
                   style={{
@@ -853,7 +920,7 @@ function App() {
                 <div className={`absolute inset-0 bg-gradient-to-br ${selectedGame.accent} opacity-20`} />
                 <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-launcher-bg via-launcher-bg/70 to-transparent" />
 
-                <div className="relative flex min-h-[520px] max-w-3xl flex-col justify-end p-8 lg:p-10">
+                <div className="relative flex h-full min-h-0 max-w-3xl flex-col justify-end p-7 lg:p-9">
                   <div className="mb-auto flex flex-wrap items-center gap-3">
                     <span className="rounded-full border border-white/[0.12] bg-black/30 px-3 py-1.5 text-xs font-black uppercase tracking-[0.2em] text-white/85 backdrop-blur-md">
                       {selectedGame.status === 'installed' ? 'Na sua biblioteca' : 'Disponível para instalar'}
@@ -885,119 +952,34 @@ function App() {
                       {isLaunching
                         ? 'Iniciando...'
                         : pendingActionId === 'primary-install'
-                          ? 'Baixando...'
+                          ? installFlow?.status === 'installing'
+                            ? 'Instalando...'
+                            : installFlow?.status === 'preparing'
+                              ? 'Preparando...'
+                            : installFlow?.status === 'updating'
+                              ? 'Atualizando...'
+                              : installFlow?.status === 'launching'
+                                ? 'Iniciando...'
+                                : 'Baixando...'
                           : selectedGame.status === 'installed'
                             ? 'Jogar'
                             : 'Baixar e instalar'}
                     </button>
                     <button
                       className="rounded-2xl border border-white/[0.12] bg-white/[0.07] px-5 py-4 text-sm font-bold text-white/78 backdrop-blur-md transition hover:border-white/25 hover:bg-white/[0.12] hover:text-white"
+                      onClick={() => setIsDetailsOpen((open) => !open)}
                       type="button"
                     >
                       Ver detalhes
                     </button>
                   </div>
 
-                  {activeUpdateProgress && (
-                    <section className="mt-8 overflow-hidden rounded-[1.75rem] border border-sky-300/25 bg-slate-950/55 p-5 shadow-2xl shadow-sky-950/30 ring-1 ring-white/[0.06] backdrop-blur-xl">
-                      <div className="flex items-start justify-between gap-5">
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs font-black uppercase tracking-[0.24em] text-sky-200">
-                            Atualizando {selectedGame.name}
-                          </p>
-                          <h3 className="mt-2 text-2xl font-black tracking-tight text-white">
-                            {activeUpdateProgress.message}
-                          </h3>
-                          <p className="mt-2 truncate text-sm font-semibold text-sky-100/75" title={activeUpdateProgress.currentFile ?? undefined}>
-                            {activeUpdateProgress.stageLabel ?? 'Preparando diagnóstico'}
-                            {activeUpdateProgress.currentFile ? ` • ${activeUpdateProgress.currentFile}` : ''}
-                          </p>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <p className="text-4xl font-black tracking-[-0.08em] text-white">
-                            {updatePercent}%
-                          </p>
-                          <span className="mt-2 inline-flex rounded-full bg-sky-300/10 px-3 py-1 text-[0.65rem] font-black uppercase tracking-[0.16em] text-sky-100 ring-1 ring-sky-200/20">
-                            {formatUpdateStatus(activeUpdateProgress.status)}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                        {remoteUpdateStages.map((stage, index) => {
-                          const isCurrent = index === updateStageIndex;
-                          const isComplete = activeUpdateProgress.status === 'done' || index < updateStageIndex;
-                          const isError = activeUpdateProgress.status === 'error' && isCurrent;
-
-                          return (
-                            <div
-                              className={`flex items-center gap-2 rounded-2xl px-3 py-2 text-[0.68rem] font-black uppercase tracking-[0.12em] ring-1 ${
-                                isError
-                                  ? 'bg-red-400/15 text-red-100 ring-red-300/25'
-                                  : isCurrent
-                                    ? 'bg-sky-300/15 text-white ring-sky-200/30 shadow-[0_0_22px_rgba(125,211,252,0.16)]'
-                                    : isComplete
-                                      ? 'bg-emerald-400/10 text-emerald-100/85 ring-emerald-300/15'
-                                      : 'bg-white/[0.045] text-sky-100/45 ring-white/[0.06]'
-                              }`}
-                              key={stage.id}
-                              title={stage.id}
-                            >
-                              <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-black/25 text-[0.65rem] ring-1 ring-white/10">
-                                {isError ? '!' : isComplete ? '✓' : isCurrent ? '●' : '○'}
-                              </span>
-                              <span className="truncate">{stage.label}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      <div className="mt-5 h-4 overflow-hidden rounded-full bg-black/35 p-1 ring-1 ring-white/[0.08]">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-sky-300 via-cyan-200 to-purple-300 shadow-[0_0_26px_rgba(125,211,252,0.45)] transition-all duration-500"
-                          style={{ width: `${updatePercent}%` }}
-                        />
-                      </div>
-
-                      <div className="mt-4 grid grid-cols-3 gap-2 text-xs text-sky-50/80">
-                        <div className="rounded-2xl bg-white/[0.06] p-3 ring-1 ring-white/[0.06]">
-                          <p className="font-black text-white">{formatInteger(activeUpdateProgress.checkedFiles)} / {formatInteger(activeUpdateProgress.totalFiles)}</p>
-                          <p className="mt-1 text-sky-100/60">arquivos verificados</p>
-                        </div>
-                        <div className="rounded-2xl bg-white/[0.06] p-3 ring-1 ring-white/[0.06]">
-                          <p className="font-black text-white">{formatInteger(activeUpdateProgress.updatedFiles)}</p>
-                          <p className="mt-1 text-sky-100/60">baixados/aplicados</p>
-                        </div>
-                        <div className="rounded-2xl bg-white/[0.06] p-3 ring-1 ring-white/[0.06]">
-                          <p className="font-black text-white">{formatUpdateStatus(activeUpdateProgress.status)}</p>
-                          <p className="mt-1 text-sky-100/60">fase atual</p>
-                        </div>
-                      </div>
-
-                      <div className="mt-4 grid gap-2 rounded-2xl bg-black/25 p-4 text-xs leading-5 text-sky-50/80 ring-1 ring-white/[0.06] sm:grid-cols-2">
-                        <div>
-                          <p className="font-black uppercase tracking-[0.16em] text-sky-200">Diagnóstico</p>
-                          <p className="mt-2">Stage: <strong>{activeUpdateProgress.stage ?? 'sem stage'}</strong></p>
-                          <p>Último evento: <strong>{lastUpdateEventLabel}</strong></p>
-                          <p>Fonte: <strong>{updateProgressSource ?? 'aguardando'}</strong></p>
-                          <p>Status: <strong>{activeUpdateProgress.status}</strong></p>
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate">Alvo: <strong>{activeUpdateProgress.targetDir ?? 'aguardando backend'}</strong></p>
-                          <p className="truncate">Log: <strong>{activeUpdateProgress.logPath ?? 'aguardando backend'}</strong></p>
-                          {activeUpdateProgress.error && (
-                            <p className="mt-1 line-clamp-2 text-red-100">Erro: {activeUpdateProgress.error}</p>
-                          )}
-                        </div>
-                      </div>
-                    </section>
-                  )}
                 </div>
               </article>
             </section>
 
-            <aside className="space-y-4">
-              <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-5 backdrop-blur-2xl">
+            <aside className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+              <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-4 backdrop-blur-2xl">
                 <div className="flex items-center gap-4">
                   <div className={`grid h-16 w-16 place-items-center rounded-3xl bg-gradient-to-br ${selectedGame.accent} text-sm font-black shadow-glow`}>
                     {selectedGame.shortName}
@@ -1010,19 +992,19 @@ function App() {
                   </div>
                 </div>
 
-                <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
-                  <div className="rounded-2xl bg-black/20 p-4 ring-1 ring-white/[0.08]">
+                <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-2xl bg-black/20 p-3 ring-1 ring-white/[0.08]">
                     <p className="text-xs text-launcher-muted">Runner</p>
                     <p className="mt-1 font-black">{selectedGame.runnerLabel}</p>
                   </div>
-                  <div className="rounded-2xl bg-black/20 p-4 ring-1 ring-white/[0.08]">
+                  <div className="rounded-2xl bg-black/20 p-3 ring-1 ring-white/[0.08]">
                     <p className="text-xs text-launcher-muted">Estado</p>
                     <p className="mt-1 font-black">{selectedGame.status === 'installed' ? 'Instalado' : 'Catálogo'}</p>
                   </div>
                 </div>
 
                 {selectedInstall && (
-                  <div className="mt-3 rounded-2xl bg-black/20 p-4 text-sm ring-1 ring-white/[0.08]">
+                  <div className="mt-3 rounded-2xl bg-black/20 p-3 text-sm ring-1 ring-white/[0.08]">
                     <p className="text-xs text-launcher-muted">Caminho da instalação</p>
                     <p className="mt-2 break-all font-semibold leading-6 text-white/85">
                       {selectedInstall.installPath}
@@ -1031,27 +1013,8 @@ function App() {
                 )}
               </section>
 
-              <section className="rounded-[1.75rem] border border-white/10 bg-launcher-panel/80 p-3 shadow-2xl shadow-black/30">
-                {secondaryActions.map((action) => (
-                  <button
-                    className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-sm font-semibold text-launcher-muted transition hover:bg-white/[0.065] hover:text-white"
-                    disabled={pendingActionId !== null || isLaunching}
-                    key={action.id}
-                    onClick={() => void handleSecondaryAction(action)}
-                    type="button"
-                  >
-                    {pendingActionId === action.id
-                      ? action.id === 'run-remote-update'
-                        ? 'Atualizando arquivos...'
-                        : 'Processando...'
-                      : action.label}
-                    <span className="text-white/25">›</span>
-                  </button>
-                ))}
-              </section>
-
               {activeUpdateProgress && (
-                <section className={`rounded-[1.75rem] border p-5 text-sm ${
+                <section className={`shrink-0 rounded-[1.5rem] border p-4 text-xs ${
                   activeUpdateProgress.status === 'error'
                     ? 'border-red-300/20 bg-red-500/[0.08] text-red-100'
                     : 'border-sky-300/20 bg-sky-500/[0.08] text-sky-100'
@@ -1062,35 +1025,55 @@ function App() {
                       <p className="text-xs font-black uppercase tracking-[0.2em] text-sky-200">
                         Atualização
                       </p>
-                      <p className="mt-1 font-black">{activeUpdateProgress.message}</p>
+                      <p className="mt-1 truncate font-black" title={activeUpdateProgress.message}>{activeUpdateProgress.stageLabel ?? activeUpdateProgress.message}</p>
                     </div>
                     <span className="rounded-full bg-black/20 px-3 py-1 text-xs font-black uppercase tracking-[0.14em] ring-1 ring-white/10">
                       {formatUpdateStatus(activeUpdateProgress.status)}
                     </span>
                   </div>
-                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-black/25 ring-1 ring-white/[0.08]">
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/25 ring-1 ring-white/[0.08]">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-sky-300 to-purple-300 transition-all"
                       style={{ width: `${updatePercent}%` }}
                     />
                   </div>
-                  <p className="mt-3 text-xs leading-5 text-sky-100/80">
+                  <p className="mt-2 truncate leading-5 text-sky-100/80" title={activeUpdateProgress.currentFile ?? undefined}>
                     {formatInteger(activeUpdateProgress.checkedFiles)}/{formatInteger(activeUpdateProgress.totalFiles)} verificados • {formatInteger(activeUpdateProgress.updatedFiles)} baixados
                     {activeUpdateProgress.currentFile ? ` • ${activeUpdateProgress.currentFile}` : ''}
                   </p>
-                  <div className="mt-4 space-y-1 rounded-2xl bg-black/20 p-3 text-xs leading-5 ring-1 ring-white/[0.06]">
-                    <p><strong>Etapa:</strong> {activeUpdateProgress.stageLabel ?? 'Aguardando etapa'}</p>
-                    <p><strong>Evento:</strong> {lastUpdateEventLabel}</p>
-                    <p><strong>Fonte:</strong> {updateProgressSource ?? 'aguardando'}</p>
-                    <p className="break-all"><strong>Log:</strong> {activeUpdateProgress.logPath ?? 'aguardando backend'}</p>
-                    {activeUpdateProgress.targetDir && (
-                      <p className="break-all"><strong>Alvo:</strong> {activeUpdateProgress.targetDir}</p>
-                    )}
-                  </div>
+                  <button className="mt-2 font-black uppercase tracking-[0.12em] text-sky-200 hover:text-white" onClick={() => setIsDetailsOpen(true)} type="button">Ver detalhes</button>
                 </section>
               )}
 
-              <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-5 backdrop-blur-2xl">
+              <section className="min-h-0 flex-1 rounded-[1.75rem] border border-white/10 bg-launcher-panel/80 p-3 shadow-2xl shadow-black/30">
+                <div className="grid h-full min-h-0 auto-rows-fr grid-cols-2 gap-1.5">
+                  {secondaryActions.map((action) => (
+                    <button
+                      className="flex min-h-0 items-center justify-between rounded-2xl px-3 py-2 text-left text-xs font-semibold leading-4 text-launcher-muted transition hover:bg-white/[0.065] hover:text-white"
+                      disabled={pendingActionId !== null || isLaunching}
+                      key={action.id}
+                      onClick={() => void handleSecondaryAction(action)}
+                      type="button"
+                    >
+                      <span>{pendingActionId === action.id
+                        ? action.id === 'run-remote-update'
+                          ? 'Atualizando arquivos...'
+                          : 'Processando...'
+                        : action.label}</span>
+                      <span className="ml-2 shrink-0 text-white/25">›</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              {installFlow?.gameId === selectedGame.id && !['done', 'error'].includes(installFlow.status) && (
+                <section className="rounded-[1.5rem] border border-purple-300/20 bg-purple-500/[0.08] p-4 text-xs text-purple-100">
+                  <p className="font-black uppercase tracking-[0.16em]">Preparando jogo</p>
+                  <p className="mt-2 leading-5 text-white/75">{installFlow.message}</p>
+                </section>
+              )}
+
+              <section className="hidden rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-5 backdrop-blur-2xl">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-black uppercase tracking-[0.2em] text-launcher-muted">
@@ -1136,7 +1119,7 @@ function App() {
               </section>
 
               {(actionMessage || actionError) && (
-                <section className={`rounded-[1.75rem] border p-4 text-sm leading-6 ${
+                <section className={`min-h-0 overflow-y-auto rounded-[1.75rem] border p-4 text-sm leading-6 ${
                   actionError
                     ? 'border-red-300/20 bg-red-500/[0.08] text-red-100'
                     : 'border-emerald-300/20 bg-emerald-500/[0.08] text-emerald-100'
@@ -1146,7 +1129,7 @@ function App() {
                 </section>
               )}
 
-              <section className="rounded-[1.75rem] border border-purple-300/15 bg-purple-500/[0.065] p-5">
+              <section className="hidden rounded-[1.75rem] border border-purple-300/15 bg-purple-500/[0.065] p-5">
                 <p className="text-xs font-black uppercase tracking-[0.2em] text-purple-200">
                   Nota de compatibilidade
                 </p>
@@ -1159,6 +1142,44 @@ function App() {
           </div>
         </section>
       </div>
+
+      {isLibraryOpen && (
+        <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={() => setIsLibraryOpen(false)} role="presentation">
+          <section className="h-full w-[min(420px,90vw)] overflow-y-auto border-r border-white/10 bg-launcher-panel/95 p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <div><p className="text-xs font-black uppercase tracking-[0.2em] text-purple-300">Biblioteca</p><h2 className="mt-1 text-2xl font-black">Todos os jogos</h2></div>
+              <button className="grid h-10 w-10 place-items-center rounded-xl bg-white/[0.07] text-xl" onClick={() => setIsLibraryOpen(false)} type="button">×</button>
+            </div>
+            <div className="mt-5 grid gap-2">
+              {games.map((game) => (
+                <button className={`flex items-center gap-3 rounded-2xl border p-3 text-left transition ${game.id === selectedGame.id ? 'border-purple-300/45 bg-white/10' : 'border-white/[0.07] bg-white/[0.035] hover:bg-white/[0.07]'}`} key={game.id} onClick={() => { setSelectedGameId(game.id); setIsLibraryOpen(false); }} type="button">
+                  <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br ${game.accent} text-xs font-black`}>{game.shortName}</span>
+                  <span className="min-w-0 flex-1"><strong className="block truncate">{game.name}</strong><span className="mt-1 block truncate text-xs text-launcher-muted">{game.installLabel} • {game.runnerLabel}</span></span><span className="text-white/25">›</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {isDetailsOpen && (
+        <div className="absolute inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm" onClick={() => setIsDetailsOpen(false)} role="presentation">
+          <aside className="h-full w-[min(450px,92vw)] overflow-y-auto border-l border-white/10 bg-launcher-panel/95 p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[0.2em] text-purple-300">Detalhes</p><h2 className="mt-1 text-xl font-black">{selectedGame.name}</h2></div><button className="grid h-10 w-10 place-items-center rounded-xl bg-white/[0.07] text-xl" onClick={() => setIsDetailsOpen(false)} type="button">×</button></div>
+            <p className="mt-4 text-sm leading-6 text-launcher-muted">{selectedGame.description}</p>
+            {selectedInstall && <p className="mt-3 break-all rounded-xl bg-black/20 p-3 text-xs leading-5 text-white/60 ring-1 ring-white/[0.07]">{selectedInstall.installPath}</p>}
+            {activeUpdateProgress && (
+              <section className="mt-5 rounded-2xl border border-sky-300/20 bg-sky-500/[0.06] p-4 text-xs">
+                <div className="flex justify-between gap-3"><div><p className="font-black uppercase tracking-[0.16em] text-sky-200">Diagnóstico do update</p><p className="mt-1 font-semibold">{activeUpdateProgress.message}</p></div><strong className="text-xl">{updatePercent}%</strong></div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/25"><div className="h-full bg-gradient-to-r from-sky-300 to-purple-300" style={{ width: `${updatePercent}%` }} /></div>
+                <div className="mt-4 space-y-1 break-all rounded-xl bg-black/20 p-3 leading-5 text-white/65">
+                  <p><strong>Etapa:</strong> {activeUpdateProgress.stageLabel ?? '—'}</p><p><strong>Stage:</strong> {activeUpdateProgress.stage ?? '—'}</p><p><strong>Evento:</strong> {lastUpdateEventLabel}</p><p><strong>Fonte:</strong> {updateProgressSource ?? 'aguardando'}</p><p><strong>Arquivo:</strong> {activeUpdateProgress.currentFile ?? '—'}</p><p><strong>Alvo:</strong> {activeUpdateProgress.targetDir ?? '—'}</p><p><strong>Log:</strong> {activeUpdateProgress.logPath ?? '—'}</p>
+                </div>
+              </section>
+            )}
+          </aside>
+        </div>
+      )}
     </main>
   );
 }
