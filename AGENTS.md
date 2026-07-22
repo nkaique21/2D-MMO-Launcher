@@ -440,6 +440,9 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - A verificação não baixa, apaga nem substitui arquivos. Ela apenas diagnostica e informa `repairStrategy`: `remoteManifest` quando há reparo remoto disponível, depois `archive`, `windowsInstaller` ou `existing` conforme os métodos declarados. A reparação permanece uma ação explícita separada para evitar efeitos destrutivos inesperados.
 - Arquivos obrigatórios mínimos foram declarados nos manifestos atuais: PokeMMO (`PokeMMO.sh`, `PokeMMO.exe`, `data`, `roms`), PokeXGames (`pxgme-linux`), Grand Line Adventures (`glaclient-linux`), Medivia (`medivia`) e Archlight (`abaldar.exe`, `libEGL.dll`, `libGLESv2.dll`). O RavenQuest usa lista adicional vazia porque o executável BattlEye efetivo já é verificado e o manifesto remoto completo continua sendo a fonte de integridade aprofundada.
 - O drawer mostra estado íntegro ou de atenção, pasta, executável efetivo, estratégia de reparo, problemas e arquivos ausentes. Teste interativo no Tauri confirmou estado íntegro no PokeMMO e no RavenQuest, incluindo o caminho terminado em `ravenquest_dx_BE.exe`. Dois testes Rust cobrem arquivo obrigatório ausente e pasta de instalação ausente. Validações: `cargo test --manifest-path src-tauri/Cargo.toml` (2 testes), `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml`, `cargo fmt` e `git diff --check` passaram.
+- O primeiro fluxo de reparo explícito foi conectado para instalações com `repairStrategy: "remoteManifest"`. Quando a verificação encontra problema, a pasta registrada ainda existe e o manifesto suporta update remoto, o drawer mostra `Reparar arquivos pelo manifesto`; jogos com estratégias `archive`, `windowsInstaller`, `existing` ou manuais continuam apenas com diagnóstico para evitar reinstalações destrutivas inesperadas.
+- Update explícito e reparo compartilham uma única função no frontend e o mesmo `run_game_remote_update` transacional do backend, incluindo staging, validação, aplicação, eventos Tauri e fallback por `runner.log`. Ao terminar, o frontend chama `verify_game_install` novamente e substitui o diagnóstico antigo pelo estado atual.
+- Teste real controlado do reparo no RavenQuest: `ravenquest_dx_BE.exe` foi movido temporariamente para backup, `Verificar arquivos` mostrou `Instalação requer atenção` e o CTA de reparo, o reparo remoto recriou o executável e a reverificação automática mudou para `Instalação íntegra`. `cmp` confirmou que o arquivo baixado era binariamente idêntico ao backup original; o backup temporário foi removido e a instalação ficou restaurada.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -451,8 +454,9 @@ Próximo passo recomendado para desenvolvimento:
    - Avaliar se o manifesto precisa de campos adicionais para validação de pasta, executáveis alternativos ou argumentos por plataforma.
 
 2. **Evoluir reparo das instalações**
-   - Conectar o diagnóstico de `Verificar arquivos` a uma ação explícita de reparo para estratégias suportadas, começando por `remoteManifest` sem disparar downloads automaticamente durante a verificação.
+   - O reparo explícito por `remoteManifest` já está implementado e validado no RavenQuest, sem disparar downloads automaticamente durante a verificação.
    - Avaliar checksums opcionais por manifesto para jogos sem manifesto remoto; manter `requiredFiles` como checagem estrutural rápida.
+   - Definir fluxos não destrutivos antes de habilitar reparo para `archive` ou `windowsInstaller`; até lá, essas estratégias permanecem apenas como orientação diagnóstica.
 
 3. **Camada de runners**
    - Validar o botão `Baixar instalador Windows` do RavenQuest em ambiente com Proton/UMU disponível.

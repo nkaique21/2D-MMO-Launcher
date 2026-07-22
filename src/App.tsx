@@ -240,6 +240,10 @@ function isUpdateFinished(progress: GameUpdateProgress | null) {
   return progress?.status === 'done' || progress?.status === 'error';
 }
 
+function isRemoteUpdateAction(actionId: string | null) {
+  return actionId === 'run-remote-update' || actionId === 'repair-files';
+}
+
 function getUpdatePercent(progress: GameUpdateProgress | null) {
   if (!progress) return 0;
   if (progress.totalFiles <= 0) return progress.status === 'manifest' ? 5 : 0;
@@ -437,7 +441,7 @@ function App() {
     if (!selectedGameId) return undefined;
 
     const progressBelongsToSelectedGame = updateProgress?.gameId === selectedGameId;
-    const shouldPollRunnerLog = pendingActionId === 'run-remote-update'
+    const shouldPollRunnerLog = isRemoteUpdateAction(pendingActionId)
       || (progressBelongsToSelectedGame && !isUpdateFinished(updateProgress));
 
     if (!shouldPollRunnerLog) return undefined;
@@ -466,7 +470,7 @@ function App() {
 
         if (progressFromLog.status === 'done') {
           setPendingActionId((currentActionId) => (
-            currentActionId === 'run-remote-update' ? null : currentActionId
+            isRemoteUpdateAction(currentActionId) ? null : currentActionId
           ));
           setActionError(null);
           setActionMessage((currentMessage) => (
@@ -478,7 +482,7 @@ function App() {
 
         if (progressFromLog.status === 'error') {
           setPendingActionId((currentActionId) => (
-            currentActionId === 'run-remote-update' ? null : currentActionId
+            isRemoteUpdateAction(currentActionId) ? null : currentActionId
           ));
           setActionError(progressFromLog.error ?? 'Falha detectada no runner.log durante o update remoto.');
         }
@@ -590,7 +594,37 @@ function App() {
   const updatePercent = getUpdatePercent(activeUpdateProgress);
   const updateStageIndex = getUpdateStageIndex(activeUpdateProgress);
   const lastUpdateEventLabel = formatElapsedSeconds(updateProgressReceivedAt, nowTimestamp);
-  const isRemoteUpdateRunning = pendingActionId === 'run-remote-update';
+  const isRemoteUpdateRunning = isRemoteUpdateAction(pendingActionId);
+
+  async function executeRemoteUpdate(actionId: 'run-remote-update' | 'repair-files') {
+    const isRepair = actionId === 'repair-files';
+
+    setPendingActionId(actionId);
+    setUpdateProgress(createPreparingUpdateProgress(selectedGame.id));
+    setUpdateProgressReceivedAt(Date.now());
+    setUpdateProgressSource('local');
+    setActionError(null);
+    setActionMessage(isRepair
+      ? 'Preparando reparo dos arquivos pelo manifesto remoto...'
+      : 'Preparando atualização dos arquivos...');
+
+    try {
+      const result = await runGameRemoteUpdate(selectedGame.id);
+      const logMessage = result.logPath ? ` Log: ${result.logPath}` : '';
+      const verification = await verifyGameInstall(selectedGame.id);
+
+      setVerificationResult(verification);
+      setActionMessage(
+        `${isRepair ? 'Reparo' : 'Update'} concluído: ${result.updatedFiles} arquivo(s) baixado(s), ${result.skippedFiles} já estavam atualizados, ${formatBytes(result.downloadedBytes)} transferidos. ${verification.valid
+          ? 'A instalação passou na verificação estrutural.'
+          : `Ainda restam ${verification.issues.length} problema(s).`}${logMessage}`,
+      );
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPendingActionId(null);
+    }
+  }
 
   async function handlePrimaryAction() {
     setActionError(null);
@@ -805,24 +839,7 @@ function App() {
     }
 
     if (action.type === 'installedAction' && action.id === 'run-remote-update') {
-      setPendingActionId(action.id);
-      setUpdateProgress(createPreparingUpdateProgress(selectedGame.id));
-      setUpdateProgressReceivedAt(Date.now());
-      setUpdateProgressSource('local');
-      setActionMessage('Preparando atualização dos arquivos...');
-
-      try {
-        const result = await runGameRemoteUpdate(selectedGame.id);
-        const logMessage = result.logPath ? ` Log: ${result.logPath}` : '';
-
-        setActionMessage(
-          `Update concluído: ${result.updatedFiles} arquivo(s) baixado(s), ${result.skippedFiles} já estavam atualizados, ${formatBytes(result.downloadedBytes)} transferidos.${logMessage}`,
-        );
-      } catch (error) {
-        setActionError(error instanceof Error ? error.message : String(error));
-      } finally {
-        setPendingActionId(null);
-      }
+      await executeRemoteUpdate('run-remote-update');
 
       return;
     }
@@ -1278,6 +1295,18 @@ function App() {
                   {verificationResult.issues.map((issue) => <p key={issue}>• {issue}</p>)}
                   {verificationResult.missingFiles.map((file) => <p key={file}>• Ausente: {file}</p>)}
                 </div>
+                {!verificationResult.valid
+                  && verificationResult.installPathExists
+                  && verificationResult.repairStrategy === 'remoteManifest' && (
+                  <button
+                    className="mt-3 w-full rounded-xl border border-sky-300/20 bg-sky-400/10 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-sky-100 transition hover:bg-sky-400/15 disabled:cursor-wait disabled:opacity-50"
+                    disabled={pendingActionId !== null || isLaunching}
+                    onClick={() => void executeRemoteUpdate('repair-files')}
+                    type="button"
+                  >
+                    {pendingActionId === 'repair-files' ? 'Reparando arquivos...' : 'Reparar arquivos pelo manifesto'}
+                  </button>
+                )}
               </section>
             )}
           </aside>
