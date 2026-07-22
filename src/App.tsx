@@ -793,18 +793,15 @@ function App() {
 
   return (
     <main className="h-screen min-h-[560px] overflow-hidden bg-launcher-bg text-launcher-text">
-      <div className="flex h-full bg-[radial-gradient(circle_at_10%_0%,rgba(139,92,246,0.22),transparent_28rem),radial-gradient(circle_at_82%_18%,rgba(14,165,233,0.12),transparent_24rem),linear-gradient(135deg,rgba(255,255,255,0.03),transparent_42%)]">
-        <aside className="flex w-[104px] flex-col items-center border-r border-white/10 bg-black/35 px-4 py-5 backdrop-blur-2xl">
-          <div className="grid h-14 w-14 place-items-center rounded-[1.35rem] bg-white/10 ring-1 ring-white/15 shadow-glow">
+      <div className="relative flex h-full bg-launcher-bg">
+        <aside className="relative z-30 flex w-[84px] shrink-0 flex-col items-center border-r border-white/10 bg-black/45 px-3 py-4 backdrop-blur-2xl">
+          <div className="grid h-12 w-12 place-items-center rounded-2xl bg-white/10 ring-1 ring-white/15 shadow-glow">
             <span className="bg-gradient-to-br from-white to-purple-200 bg-clip-text text-lg font-black text-transparent">
               2D
             </span>
           </div>
 
-          <div className="mt-9 flex w-full flex-1 flex-col items-center gap-3">
-            <p className="mb-1 [writing-mode:vertical-rl] rotate-180 text-[0.63rem] font-black uppercase tracking-[0.28em] text-launcher-muted">
-              Instalados
-            </p>
+          <div className="mt-5 flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-hidden">
             {installedGames.length > 0 ? (
               installedGames.map((game) => {
                 const isActive = game.id === selectedGame.id;
@@ -812,7 +809,7 @@ function App() {
                 return (
                   <button
                     aria-label={game.name}
-                    className={`group relative grid h-16 w-16 place-items-center rounded-3xl border transition duration-200 ${
+                    className={`group relative grid h-13 w-13 shrink-0 place-items-center rounded-2xl border transition duration-200 ${
                       isActive
                         ? 'border-purple-300/70 bg-white/15 shadow-glow'
                         : 'border-white/10 bg-white/[0.055] hover:border-white/25 hover:bg-white/10'
@@ -822,11 +819,11 @@ function App() {
                     title={game.name}
                     type="button"
                   >
-                    <span className={`absolute inset-2 rounded-[1.15rem] bg-gradient-to-br ${game.accent} opacity-80 blur-[1px]`} />
-                    <span className="relative text-sm font-black tracking-tight text-white drop-shadow">
+                    <span className={`absolute inset-1.5 rounded-xl bg-gradient-to-br ${game.accent} opacity-80`} />
+                    <span className="relative text-[0.68rem] font-black tracking-tight text-white drop-shadow">
                       {game.shortName}
                     </span>
-                    {isActive && <span className="absolute -right-5 h-9 w-1 rounded-full bg-purple-300" />}
+                    {isActive && <span className="absolute -right-[15px] h-7 w-0.5 rounded-full bg-white" />}
                   </button>
                 );
               })
@@ -838,7 +835,7 @@ function App() {
           </div>
 
           <button
-            className="grid h-12 w-12 place-items-center rounded-2xl border border-white/10 bg-white/[0.055] text-xl text-launcher-muted transition hover:border-purple-300/40 hover:text-white"
+            className="grid h-11 w-11 place-items-center rounded-2xl border border-white/10 bg-white/[0.055] text-xl text-launcher-muted transition hover:border-purple-300/40 hover:text-white"
             onClick={() => setIsLibraryOpen(true)}
             title="Abrir catálogo"
             type="button"
@@ -847,16 +844,15 @@ function App() {
           </button>
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col">
-          <header className="shrink-0 border-b border-white/10 bg-launcher-bg/55 px-7 py-4 backdrop-blur-2xl">
+        <section className="relative flex min-w-0 flex-1 flex-col">
+          <header className="absolute left-6 right-6 top-5 z-20 flex h-8 items-center justify-between pointer-events-none">
             <div className="flex items-center justify-between gap-6">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.28em] text-purple-300">
-                  Catálogo por manifesto
+                <p className="text-[0.65rem] font-black uppercase tracking-[0.28em] text-white/45">
+                  2D MMO Launcher
                 </p>
-                <h1 className="mt-1 text-2xl font-black tracking-tight">2D MMO Launcher</h1>
               </div>
-              <div className="flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.045] px-4 py-2 text-xs font-semibold text-launcher-muted">
+              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-2 text-[0.68rem] font-semibold text-white/55 backdrop-blur-md">
                 <span className={`h-2 w-2 rounded-full ${loadError ? 'bg-amber-300 shadow-[0_0_18px_rgba(252,211,77,0.75)]' : 'bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.75)]'}`} />
                 {loadError ? 'Catálogo local em modo degradado' : 'Manifestos locais carregados'}
               </div>
@@ -908,19 +904,19 @@ function App() {
             </div>
           </header>
 
-          <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_300px] gap-4 overflow-hidden p-5">
-            <section className="min-h-0 min-w-0">
-              <article className="relative h-full min-h-0 overflow-hidden rounded-[2rem] border border-white/10 bg-launcher-panel shadow-2xl shadow-black/40">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <section className="h-full min-h-0 min-w-0">
+              <article className="relative h-full min-h-0 overflow-hidden bg-launcher-panel shadow-2xl shadow-black/40">
                 <div
                   className="absolute inset-0 bg-cover bg-center opacity-70"
                   style={{
-                    backgroundImage: `linear-gradient(90deg, rgba(7,7,16,0.92) 0%, rgba(7,7,16,0.58) 46%, rgba(7,7,16,0.26) 100%), url(${selectedGame.assets.banner})`,
+                    backgroundImage: `linear-gradient(90deg, rgba(7,7,16,0.93) 0%, rgba(7,7,16,0.52) 43%, rgba(7,7,16,0.12) 78%), linear-gradient(0deg, rgba(7,7,16,0.92) 0%, transparent 50%), url(${selectedGame.assets.banner})`,
                   }}
                 />
                 <div className={`absolute inset-0 bg-gradient-to-br ${selectedGame.accent} opacity-20`} />
                 <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-launcher-bg via-launcher-bg/70 to-transparent" />
 
-                <div className="relative flex h-full min-h-0 max-w-3xl flex-col justify-end p-7 lg:p-9">
+                <div className="relative flex h-full min-h-0 max-w-[590px] flex-col justify-end p-7 pb-8 lg:p-10 lg:pb-9">
                   <div className="mb-auto flex flex-wrap items-center gap-3">
                     <span className="rounded-full border border-white/[0.12] bg-black/30 px-3 py-1.5 text-xs font-black uppercase tracking-[0.2em] text-white/85 backdrop-blur-md">
                       {selectedGame.status === 'installed' ? 'Na sua biblioteca' : 'Disponível para instalar'}
@@ -935,16 +931,16 @@ function App() {
                   <p className="text-sm font-bold uppercase tracking-[0.24em] text-purple-200/90">
                     {selectedGame.meta}
                   </p>
-                  <h2 className="mt-3 max-w-2xl text-6xl font-black leading-[0.92] tracking-[-0.06em] text-white">
+                  <h2 className="mt-2 max-w-2xl text-5xl font-black leading-[0.92] tracking-[-0.05em] text-white">
                     {selectedGame.name}
                   </h2>
-                  <p className="mt-5 max-w-xl text-base leading-7 text-launcher-muted">
+                  <p className="mt-4 line-clamp-2 max-w-xl text-sm leading-6 text-white/60">
                     {selectedGame.description}
                   </p>
 
-                  <div className="mt-8 flex flex-wrap items-center gap-3">
+                  <div className="fixed bottom-8 right-8 z-30 flex flex-wrap items-center justify-end gap-3">
                     <button
-                      className="rounded-2xl bg-white px-8 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 shadow-[0_18px_60px_rgba(255,255,255,0.16)] transition hover:-translate-y-0.5 hover:bg-purple-100"
+                      className="order-2 min-w-[190px] rounded-xl bg-white px-8 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 shadow-[0_18px_60px_rgba(0,0,0,0.35)] transition hover:-translate-y-0.5 hover:bg-purple-100"
                       disabled={isLaunching || pendingActionId === 'primary-install' || isRemoteUpdateRunning}
                       onClick={() => void handlePrimaryAction()}
                       type="button"
@@ -966,11 +962,11 @@ function App() {
                             : 'Baixar e instalar'}
                     </button>
                     <button
-                      className="rounded-2xl border border-white/[0.12] bg-white/[0.07] px-5 py-4 text-sm font-bold text-white/78 backdrop-blur-md transition hover:border-white/25 hover:bg-white/[0.12] hover:text-white"
+                      className="order-1 grid h-12 w-12 place-items-center rounded-full border border-white/[0.14] bg-black/50 px-0 text-xl font-bold text-white/70 shadow-lg backdrop-blur-xl transition hover:border-white/25 hover:bg-white/[0.12] hover:text-white"
                       onClick={() => setIsDetailsOpen((open) => !open)}
                       type="button"
                     >
-                      Ver detalhes
+                      ⋯
                     </button>
                   </div>
 
@@ -978,8 +974,8 @@ function App() {
               </article>
             </section>
 
-            <aside className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
-              <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-4 backdrop-blur-2xl">
+            <aside className="pointer-events-none absolute bottom-[104px] right-8 z-20 flex w-[min(440px,42vw)] flex-col items-end gap-2">
+              <section className="hidden rounded-[1.75rem] border border-white/10 bg-white/[0.055] p-4 backdrop-blur-2xl">
                 <div className="flex items-center gap-4">
                   <div className={`grid h-16 w-16 place-items-center rounded-3xl bg-gradient-to-br ${selectedGame.accent} text-sm font-black shadow-glow`}>
                     {selectedGame.shortName}
@@ -1014,38 +1010,33 @@ function App() {
               </section>
 
               {activeUpdateProgress && (
-                <section className={`shrink-0 rounded-[1.5rem] border p-4 text-xs ${
+                <button className={`pointer-events-auto w-full overflow-hidden rounded-xl border bg-black/55 text-left text-xs shadow-xl backdrop-blur-xl transition hover:bg-black/65 ${
                   activeUpdateProgress.status === 'error'
-                    ? 'border-red-300/20 bg-red-500/[0.08] text-red-100'
-                    : 'border-sky-300/20 bg-sky-500/[0.08] text-sky-100'
+                    ? 'border-red-300/25 text-red-100'
+                    : 'border-white/10 text-white/75'
                 }`}
+                onClick={() => setIsDetailsOpen(true)}
+                type="button"
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-black uppercase tracking-[0.2em] text-sky-200">
-                        Atualização
-                      </p>
-                      <p className="mt-1 truncate font-black" title={activeUpdateProgress.message}>{activeUpdateProgress.stageLabel ?? activeUpdateProgress.message}</p>
-                    </div>
-                    <span className="rounded-full bg-black/20 px-3 py-1 text-xs font-black uppercase tracking-[0.14em] ring-1 ring-white/10">
+                  <div className="flex items-center gap-3 px-4 py-2.5">
+                    <span className="shrink-0 text-[0.65rem] font-black uppercase tracking-[0.16em] text-white/45">
                       {formatUpdateStatus(activeUpdateProgress.status)}
                     </span>
+                    <span className="min-w-0 flex-1 truncate font-semibold" title={activeUpdateProgress.message}>
+                      {activeUpdateProgress.stageLabel ?? activeUpdateProgress.message}
+                    </span>
+                    <strong className="text-xs text-white/80">{updatePercent}%</strong>
                   </div>
-                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/25 ring-1 ring-white/[0.08]">
+                  <div className="h-1 overflow-hidden bg-white/[0.07]">
                     <div
-                      className="h-full rounded-full bg-gradient-to-r from-sky-300 to-purple-300 transition-all"
+                      className="h-full bg-white/75 transition-all duration-300"
                       style={{ width: `${updatePercent}%` }}
                     />
                   </div>
-                  <p className="mt-2 truncate leading-5 text-sky-100/80" title={activeUpdateProgress.currentFile ?? undefined}>
-                    {formatInteger(activeUpdateProgress.checkedFiles)}/{formatInteger(activeUpdateProgress.totalFiles)} verificados • {formatInteger(activeUpdateProgress.updatedFiles)} baixados
-                    {activeUpdateProgress.currentFile ? ` • ${activeUpdateProgress.currentFile}` : ''}
-                  </p>
-                  <button className="mt-2 font-black uppercase tracking-[0.12em] text-sky-200 hover:text-white" onClick={() => setIsDetailsOpen(true)} type="button">Ver detalhes</button>
-                </section>
+                </button>
               )}
 
-              <section className="min-h-0 flex-1 rounded-[1.75rem] border border-white/10 bg-launcher-panel/80 p-3 shadow-2xl shadow-black/30">
+              <section className="hidden min-h-0 flex-1 rounded-[1.75rem] border border-white/10 bg-launcher-panel/80 p-3 shadow-2xl shadow-black/30">
                 <div className="grid h-full min-h-0 auto-rows-fr grid-cols-2 gap-1.5">
                   {secondaryActions.map((action) => (
                     <button
@@ -1067,7 +1058,7 @@ function App() {
               </section>
 
               {installFlow?.gameId === selectedGame.id && !['done', 'error'].includes(installFlow.status) && (
-                <section className="rounded-[1.5rem] border border-purple-300/20 bg-purple-500/[0.08] p-4 text-xs text-purple-100">
+                <section className="pointer-events-auto rounded-xl border border-white/10 bg-black/55 px-4 py-2.5 text-xs text-white/70 backdrop-blur-xl">
                   <p className="font-black uppercase tracking-[0.16em]">Preparando jogo</p>
                   <p className="mt-2 leading-5 text-white/75">{installFlow.message}</p>
                 </section>
@@ -1119,14 +1110,17 @@ function App() {
               </section>
 
               {(actionMessage || actionError) && (
-                <section className={`min-h-0 overflow-y-auto rounded-[1.75rem] border p-4 text-sm leading-6 ${
+                <button className={`pointer-events-auto max-w-full truncate rounded-xl border bg-black/55 px-4 py-2.5 text-xs backdrop-blur-xl ${
                   actionError
-                    ? 'border-red-300/20 bg-red-500/[0.08] text-red-100'
-                    : 'border-emerald-300/20 bg-emerald-500/[0.08] text-emerald-100'
+                    ? 'border-red-300/25 text-red-100'
+                    : 'border-white/10 text-white/65'
                 }`}
+                onClick={() => setIsDetailsOpen(true)}
+                title={actionError ?? actionMessage ?? undefined}
+                type="button"
                 >
                   {actionError ?? actionMessage}
-                </section>
+                </button>
               )}
 
               <section className="hidden rounded-[1.75rem] border border-purple-300/15 bg-purple-500/[0.065] p-5">
@@ -1168,6 +1162,25 @@ function App() {
             <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[0.2em] text-purple-300">Detalhes</p><h2 className="mt-1 text-xl font-black">{selectedGame.name}</h2></div><button className="grid h-10 w-10 place-items-center rounded-xl bg-white/[0.07] text-xl" onClick={() => setIsDetailsOpen(false)} type="button">×</button></div>
             <p className="mt-4 text-sm leading-6 text-launcher-muted">{selectedGame.description}</p>
             {selectedInstall && <p className="mt-3 break-all rounded-xl bg-black/20 p-3 text-xs leading-5 text-white/60 ring-1 ring-white/[0.07]">{selectedInstall.installPath}</p>}
+            <section className="mt-5">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-white/40">Ações do jogo</p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {secondaryActions.map((action) => (
+                  <button
+                    className="flex min-h-14 items-center justify-between rounded-xl border border-white/[0.08] bg-white/[0.045] px-3 py-2 text-left text-xs font-semibold leading-4 text-white/65 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-45"
+                    disabled={pendingActionId !== null || isLaunching}
+                    key={action.id}
+                    onClick={() => void handleSecondaryAction(action)}
+                    type="button"
+                  >
+                    <span>{pendingActionId === action.id
+                      ? action.id === 'run-remote-update' ? 'Atualizando...' : 'Processando...'
+                      : action.label}</span>
+                    <span className="ml-2 text-white/25">›</span>
+                  </button>
+                ))}
+              </div>
+            </section>
             {activeUpdateProgress && (
               <section className="mt-5 rounded-2xl border border-sky-300/20 bg-sky-500/[0.06] p-4 text-xs">
                 <div className="flex justify-between gap-3"><div><p className="font-black uppercase tracking-[0.16em] text-sky-200">Diagnóstico do update</p><p className="mt-1 font-semibold">{activeUpdateProgress.message}</p></div><strong className="text-xl">{updatePercent}%</strong></div>
