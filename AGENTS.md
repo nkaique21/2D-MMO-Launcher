@@ -453,6 +453,9 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - O drawer `⋯` ganhou uma seção funcional `Configurações locais`, aberta por `Configurar` ou `Configurar runner`. Ela oferece o runner padrão mais runners detectados disponíveis, gera inputs genericamente a partir de `launch.env`, mostra os valores do manifesto como defaults e permite salvar ou restaurar padrões. No RavenQuest isso expõe, entre outras variáveis, `PROTONPATH`, `PROTON_BATTLEYE_RUNTIME` e `PROTON_EAC_RUNTIME`, sem regra condicionada ao ID do jogo.
 - Validação real das configurações por jogo: no Tauri recompilado, o usuário confirmou que o formulário do RavenQuest abriu, persistiu um override após fechar/reabrir e restaurou corretamente os defaults. `npm run build`, `cargo test --manifest-path src-tauri/Cargo.toml` (5 testes), `cargo check --manifest-path src-tauri/Cargo.toml`, `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` e `git diff --check` passaram.
 - O seletor de runner das configurações locais usa esquema de cores escuro também no menu nativo aberto (`color-scheme: dark` e cores explícitas nas opções), corrigindo o baixo contraste visto no WebKitGTK. O usuário confirmou no Tauri real que a lista ficou escura e legível; `npm run build` e `git diff --check` passaram após o ajuste.
+- A camada SQLite foi extraída de `src-tauri/src/lib.rs` para `src-tauri/src/database.rs`. O módulo concentra abertura do banco, modelos persistidos, queries de `installs`/`game_settings` e migrations, enquanto os comandos Tauri e regras de catálogo/launch permanecem em `lib.rs`, sem alterar os contratos expostos ao frontend.
+- O schema agora é versionado por `PRAGMA user_version`, atualmente na versão `2`: migration 1 cria/reconcilia `installs` e migration 2 cria/reconcilia `game_settings`. Cada migration roda em transação e usa `CREATE TABLE IF NOT EXISTS`, permitindo que bancos legados na versão `0`, já contendo as tabelas, sejam adotados sem apagar ou recriar dados. Bancos com versão futura desconhecida são rejeitados para evitar escrita incompatível.
+- Testes Rust do módulo de banco cobrem criação de banco vazio, adoção de schema legado preservando instalação e ciclo de persistência/reset de configurações. A suíte passou com 8 testes no total, além de `cargo check`, `cargo fmt`, `npm run build` e `git diff --check`. No banco real, a abertura do Tauri migrou `user_version` de `0` para `2`, preservou 6 instalações e 1 registro de settings; o usuário confirmou visualmente que RavenQuest continuou instalado e com configurações locais preenchidas.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -486,9 +489,10 @@ Próximo passo recomendado para desenvolvimento:
    - Usar o instalador Windows do RavenQuest como base de teste para Proton/Wine.
    - Registrar sessão para futuro tempo jogado quando o spawn for bem-sucedido.
 
-4. **Modularizar backend SQLite**
-   - Extrair a lógica SQLite atual de `src-tauri/src/lib.rs` para um módulo `database`.
-   - Preparar uma estrutura simples de migrations para evoluir `installs`, `game_settings` e `runners` sem concentrar tudo em `lib.rs`.
+4. **Evoluir persistência modular**
+   - O módulo `database` e migrations via `PRAGMA user_version` já estão implementados e validados com banco legado real.
+   - Adicionar migrations incrementais no array `MIGRATIONS` de `src-tauri/src/database.rs`; nunca editar retroativamente uma migration já distribuída.
+   - Usar o módulo para futuras tabelas de runners gerenciados, sessões e downloads, mantendo SQL e modelos persistidos fora de `lib.rs`.
 
 5. **Depois avançar para download/instalação automática**
    - Só iniciar depois que catálogo, instalações existentes e execução básica estiverem bem definidos.

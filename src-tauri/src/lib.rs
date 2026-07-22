@@ -1,6 +1,5 @@
 use crc32fast::Hasher;
 use flate2::read::ZlibDecoder;
-use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -15,9 +14,12 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
+mod database;
 mod runners;
 
+use database::{GameInstall, GameSettings};
 use runners::{build_runner_command, list_runners, managed_windows_prefix_dir, resolve_runner};
+use rusqlite::Connection;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,26 +199,6 @@ const MAX_REMOTE_UPDATE_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GameInstall {
-    game_id: String,
-    install_path: String,
-    runner_override: Option<String>,
-    created_at: String,
-    updated_at: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GameSettings {
-    game_id: String,
-    runner_override: Option<String>,
-    env_overrides: HashMap<String, String>,
-    created_at: Option<String>,
-    updated_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct LaunchResult {
     game_id: String,
     runner: String,
@@ -308,97 +290,15 @@ fn manifests_dir() -> Result<PathBuf, String> {
     Ok(current_dir.join("src-tauri").join("manifests"))
 }
 
-fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| {
-        format!("Não foi possível resolver o diretório de dados do app: {error}")
-    })?;
-
-    fs::create_dir_all(&app_data_dir).map_err(|error| {
-        format!(
-            "Não foi possível criar o diretório de dados {}: {error}",
-            app_data_dir.display()
-        )
-    })?;
-
-    Ok(app_data_dir.join("launcher.sqlite"))
-}
-
 fn open_database(app: &tauri::AppHandle) -> Result<Connection, String> {
-    let path = database_path(app)?;
-    let connection = Connection::open(&path)
-        .map_err(|error| format!("Não foi possível abrir o banco {}: {error}", path.display()))?;
-
-    connection
-        .execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS installs (
-                game_id TEXT PRIMARY KEY NOT NULL,
-                install_path TEXT NOT NULL,
-                runner_override TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS game_settings (
-                game_id TEXT PRIMARY KEY NOT NULL,
-                runner_override TEXT,
-                env_overrides_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            ",
-        )
-        .map_err(|error| format!("Não foi possível preparar o schema SQLite: {error}"))?;
-
-    Ok(connection)
-}
-
-fn empty_game_settings(game_id: &str) -> GameSettings {
-    GameSettings {
-        game_id: game_id.to_string(),
-        ..GameSettings::default()
-    }
+    database::open(app)
 }
 
 fn get_game_settings_record(
     connection: &Connection,
     game_id: &str,
 ) -> Result<GameSettings, String> {
-    let mut statement = connection
-        .prepare(
-            "
-            SELECT game_id, runner_override, env_overrides_json, created_at, updated_at
-            FROM game_settings
-            WHERE game_id = ?1
-            ",
-        )
-        .map_err(|error| {
-            format!("Não foi possível preparar configurações de {game_id}: {error}")
-        })?;
-
-    let mut rows = statement.query(params![game_id]).map_err(|error| {
-        format!("Não foi possível consultar configurações de {game_id}: {error}")
-    })?;
-    let Some(row) = rows
-        .next()
-        .map_err(|error| format!("Não foi possível ler configurações de {game_id}: {error}"))?
-    else {
-        return Ok(empty_game_settings(game_id));
-    };
-    let env_overrides_json: String = row
-        .get(2)
-        .map_err(|error| format!("Configuração de ambiente inválida para {game_id}: {error}"))?;
-    let env_overrides = serde_json::from_str(&env_overrides_json).map_err(|error| {
-        format!("JSON de configurações de ambiente inválido para {game_id}: {error}")
-    })?;
-
-    Ok(GameSettings {
-        game_id: row.get(0).map_err(|error| error.to_string())?,
-        runner_override: row.get(1).map_err(|error| error.to_string())?,
-        env_overrides,
-        created_at: row.get(3).map_err(|error| error.to_string())?,
-        updated_at: row.get(4).map_err(|error| error.to_string())?,
-    })
+    database::get_game_settings(connection, game_id)
 }
 
 fn is_valid_environment_key(key: &str) -> bool {
@@ -470,25 +370,7 @@ fn effective_manifest_and_settings(
 }
 
 fn get_install(connection: &Connection, game_id: &str) -> Result<GameInstall, String> {
-    connection
-        .query_row(
-            "
-            SELECT game_id, install_path, runner_override, created_at, updated_at
-            FROM installs
-            WHERE game_id = ?1
-            ",
-            params![game_id],
-            |row| {
-                Ok(GameInstall {
-                    game_id: row.get(0)?,
-                    install_path: row.get(1)?,
-                    runner_override: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                })
-            },
-        )
-        .map_err(|error| format!("Não foi possível carregar a instalação de {game_id}: {error}"))
+    database::get_install(connection, game_id)
 }
 
 fn save_install(
@@ -497,21 +379,7 @@ fn save_install(
     install_path: &str,
     runner_override: Option<&str>,
 ) -> Result<GameInstall, String> {
-    connection
-        .execute(
-            "
-            INSERT INTO installs (game_id, install_path, runner_override)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(game_id) DO UPDATE SET
-                install_path = excluded.install_path,
-                runner_override = excluded.runner_override,
-                updated_at = CURRENT_TIMESTAMP
-            ",
-            params![game_id, install_path, runner_override],
-        )
-        .map_err(|error| format!("Não foi possível salvar a instalação: {error}"))?;
-
-    get_install(connection, game_id)
+    database::save_install(connection, game_id, install_path, runner_override)
 }
 
 fn emit_install_updated(app: &tauri::AppHandle, install: &GameInstall) {
@@ -3967,31 +3835,7 @@ mod tests {
 #[tauri::command]
 fn list_installs(app: tauri::AppHandle) -> Result<Vec<GameInstall>, String> {
     let connection = open_database(&app)?;
-    let mut statement = connection
-        .prepare(
-            "
-            SELECT game_id, install_path, runner_override, created_at, updated_at
-            FROM installs
-            ORDER BY game_id ASC
-            ",
-        )
-        .map_err(|error| format!("Não foi possível consultar instalações: {error}"))?;
-
-    let installs = statement
-        .query_map([], |row| {
-            Ok(GameInstall {
-                game_id: row.get(0)?,
-                install_path: row.get(1)?,
-                runner_override: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-            })
-        })
-        .map_err(|error| format!("Não foi possível ler instalações: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Registro de instalação inválido: {error}"))?;
-
-    Ok(installs)
+    database::list_installs(&connection)
 }
 
 #[tauri::command]
@@ -4019,24 +3863,13 @@ fn save_game_settings(
         resolve_runner(&app, runner)?;
     }
 
-    let env_overrides_json = serde_json::to_string(&env_overrides)
-        .map_err(|error| format!("Não foi possível serializar configurações: {error}"))?;
     let connection = open_database(&app)?;
-    connection
-        .execute(
-            "
-            INSERT INTO game_settings (game_id, runner_override, env_overrides_json)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(game_id) DO UPDATE SET
-                runner_override = excluded.runner_override,
-                env_overrides_json = excluded.env_overrides_json,
-                updated_at = CURRENT_TIMESTAMP
-            ",
-            params![game_id, runner_override, env_overrides_json],
-        )
-        .map_err(|error| format!("Não foi possível salvar configurações do jogo: {error}"))?;
-
-    get_game_settings_record(&connection, &game_id)
+    database::save_game_settings(
+        &connection,
+        &game_id,
+        runner_override.as_deref(),
+        &env_overrides,
+    )
 }
 
 #[tauri::command]
@@ -4044,14 +3877,7 @@ fn reset_game_settings(app: tauri::AppHandle, game_id: String) -> Result<GameSet
     let game_id = game_id.trim().to_string();
     get_manifest(&game_id)?;
     let connection = open_database(&app)?;
-    connection
-        .execute(
-            "DELETE FROM game_settings WHERE game_id = ?1",
-            params![game_id],
-        )
-        .map_err(|error| format!("Não foi possível restaurar configurações do jogo: {error}"))?;
-
-    Ok(empty_game_settings(&game_id))
+    database::reset_game_settings(&connection, &game_id)
 }
 
 #[tauri::command]
@@ -4101,14 +3927,7 @@ fn open_install_folder(app: tauri::AppHandle, game_id: String) -> Result<(), Str
 #[tauri::command]
 fn remove_install(app: tauri::AppHandle, game_id: String) -> Result<bool, String> {
     let connection = open_database(&app)?;
-    let removed_rows = connection
-        .execute(
-            "DELETE FROM installs WHERE game_id = ?1",
-            params![game_id.trim()],
-        )
-        .map_err(|error| format!("Não foi possível remover a instalação: {error}"))?;
-
-    Ok(removed_rows > 0)
+    database::remove_install(&connection, game_id.trim())
 }
 
 #[tauri::command]
