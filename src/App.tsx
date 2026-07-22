@@ -86,11 +86,11 @@ const visualMetadataByGameId: Record<string, GameVisualMetadata> = {
     softAccent: 'bg-sky-500/15 text-sky-100 ring-sky-300/20',
     meta: 'Anime • Adventure',
   },
-  zezenia: {
-    shortName: 'ZZ',
-    accent: 'from-emerald-400 via-teal-500 to-purple-600',
-    softAccent: 'bg-emerald-500/15 text-emerald-100 ring-emerald-300/20',
-    meta: 'Classic • Persistent world',
+  pokemmo: {
+    shortName: 'PM',
+    accent: 'from-red-500 via-amber-400 to-sky-600',
+    softAccent: 'bg-red-500/15 text-red-100 ring-red-300/20',
+    meta: 'Monster catching • Online world',
   },
   medivia: {
     shortName: 'MV',

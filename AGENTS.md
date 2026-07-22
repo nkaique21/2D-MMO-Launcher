@@ -167,7 +167,7 @@ Cada jogo pode usar um runner diferente. A decisão deve vir do manifesto e/ou d
 - PokeXGames;
 - Grand Line Adventures;
 - Archlight;
-- Zezenia;
+- PokeMMO;
 - Medivia;
 - WoT posteriormente.
 
@@ -262,7 +262,7 @@ O MVP deve cobrir:
 - Downloader.
 - Fila de downloads.
 - Extração/instalação automática.
-- Prioridade inicial: Zezenia, GLA e PokeXGames, conforme viabilidade dos manifestos.
+- Prioridade inicial: PokeMMO, GLA e PokeXGames, conforme viabilidade dos manifestos.
 
 ### Fase 4 — Wine/Proton
 
@@ -433,6 +433,8 @@ Roda o app na janela nativa Tauri. Este é o modo correto para validar o visual 
 - Validação real do Medivia: o usuário clicou em `Baixar e instalar`; o launcher baixou aproximadamente 90 MB, extraiu os arquivos, registrou `/home/kaiquelb/.local/share/dev.kaiquelb.2d-mmo-launcher/games/medivia` no SQLite e abriu o cliente automaticamente. O `runner.log` confirmou `action=launch_after_archive_install`, runner `native`, working dir da instalação, PID e inicialização do Medivia x86-64. `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml` e `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passaram.
 - O Archlight agora possui instalação portátil gerenciada pelo manifesto usando `https://dw.archlightonline.com/abaldar.zip`. O ZIP oficial tem aproximadamente 274 MB, não possui pasta superior e contém `abaldar.exe`, `libEGL.dll` e `libGLESv2.dll`; portanto usa método `archive` sem `stripTopLevelDir`, mantém `launch.runner: "proton"`, define `launch.executable: "abaldar.exe"` e inicia automaticamente após extrair, sem executar instalador Windows.
 - Validação real do Archlight: o usuário confirmou download, extração e abertura do jogo. A instalação foi registrada em `/home/kaiquelb/.local/share/dev.kaiquelb.2d-mmo-launcher/games/archlight`; o `runner.log` confirmou resolução para `system-umu-run` (`/usr/bin/umu-run`), prefixo isolado em `compat-data/archlight/proton`, execução com `UMU-Proton-10.0-4`, PID iniciado e reabertura posterior pelo botão `Jogar`. `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml` e `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passaram.
+- A entrada de catálogo do Zezenia foi removida e substituída pelo PokeMMO (`id: "pokemmo"`). O manifesto usa o endpoint oficial `https://pokemmo.com/download_file/1/`, que redireciona para o ZIP Linux atual de aproximadamente 96 MB. O pacote não possui pasta superior e usa `PokeMMO.sh` como entrada nativa; o script exige o working directory dos arquivos e inicia `PokeMMO.exe` como classpath Java. O método `archive` inicia automaticamente após instalar e o backend garante permissão executável ao script.
+- Validação real do PokeMMO: o usuário confirmou que ele apareceu no catálogo, baixou, extraiu e abriu. A instalação foi registrada em `/home/kaiquelb/.local/share/dev.kaiquelb.2d-mmo-launcher/games/pokemmo`; o `runner.log` confirmou JVM com `-Xmx384M`, OpenGL/Mesa inicializado, carregamento da interface e encerramento normal com código `0`. O sistema testado tinha `/usr/bin/java` disponível. `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml` e `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passaram.
 - Ainda existem metadados visuais temporários por jogo no frontend, como abreviação, gradiente e categoria curta; eles não devem conter regra de negócio.
 
 ## Onde prosseguir daqui
@@ -441,7 +443,6 @@ Próximo passo recomendado para desenvolvimento:
 
 1. **Completar dados de execução nos manifestos**
    - Definir `launch.executable` para outros jogos nativos quando houver executável conhecido.
-   - Confirmar executable/path real de Zezenia.
    - Avaliar se o manifesto precisa de campos adicionais para validação de pasta, executáveis alternativos ou argumentos por plataforma.
 
 2. **Validar instalações registradas**

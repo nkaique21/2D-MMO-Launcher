@@ -1,0 +1,32 @@
+{
+  "id": "pokemmo",
+  "name": "PokeMMO",
+  "description": "MMO de criaturas com regiões clássicas, batalhas competitivas e progressão persistente.",
+  "assets": {
+    "banner": "/assets/games/pokemmo/banner.png",
+    "icon": "/assets/games/pokemmo/icon.png"
+  },
+  "installation": {
+    "methods": [
+      {
+        "type": "existing",
+        "label": "Localizar instalação existente"
+      },
+      {
+        "type": "archive",
+        "label": "Baixar e instalar",
+        "url": "https://pokemmo.com/download_file/1/",
+        "format": "zip",
+        "launchAfterInstall": true
+      }
+    ]
+  },
+  "launch": {
+    "runner": "native",
+    "executable": "PokeMMO.sh",
+    "args": []
+  },
+  "update": {
+    "strategy": "manual"
+  }
+}
