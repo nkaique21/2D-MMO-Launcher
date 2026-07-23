@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { GameInstall, GameManifest, GameSettings, GameUpdateProgress, GameUpdateResult, InstallVerificationResult, LaunchResult, ManagedRunner, ManagedRunnerRelease, RunnerInfo } from '../types/manifest';
+import type { GameActivity, GameInstall, GameManifest, GameSettings, GameUpdateProgress, GameUpdateResult, InstallVerificationResult, LaunchResult, ManagedRunner, ManagedRunnerRelease, PlaytimeSession, RunnerInfo } from '../types/manifest';
 
 export function listGames() {
   return invoke<GameManifest[]>('list_games');
@@ -7,6 +7,14 @@ export function listGames() {
 
 export function listInstalls() {
   return invoke<GameInstall[]>('list_installs');
+}
+
+export function getGameActivity(gameId: string) {
+  return invoke<GameActivity>('get_game_activity', { gameId });
+}
+
+export function listGamePlaytimeSessions(gameId: string) {
+  return invoke<PlaytimeSession[]>('list_game_playtime_sessions', { gameId });
 }
 
 export function listRunners() {

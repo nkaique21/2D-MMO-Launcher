@@ -5,20 +5,22 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    mpsc, Arc,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+    mpsc, Arc, Mutex,
 };
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 mod database;
 mod managed_runners;
 mod runners;
 
-use database::{GameInstall, GameSettings};
+use database::{GameInstall, GameSettings, PlaytimeSession, PlaytimeSummary};
 use managed_runners::{
     get_latest_proton_ge_release, install_latest_proton_ge, remove_managed_runner,
 };
@@ -200,6 +202,8 @@ const DOWNLOAD_RETRY_ATTEMPTS: usize = 3;
 const DOWNLOAD_RETRY_DELAY_SECONDS: u64 = 2;
 const DEFAULT_REMOTE_UPDATE_CONCURRENCY: usize = 6;
 const MAX_REMOTE_UPDATE_CONCURRENCY: usize = 16;
+const PROCESS_POLL_INTERVAL_SECONDS: u64 = 1;
+const PLAYTIME_HEARTBEAT_INTERVAL_SECONDS: u64 = 15;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +213,151 @@ struct LaunchResult {
     command: String,
     working_dir: String,
     log_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameProcessState {
+    execution_id: String,
+    game_id: String,
+    status: String,
+    process_id: Option<u32>,
+    runner: Option<String>,
+    session_id: Option<i64>,
+    started_at: Option<i64>,
+    ended_at: Option<i64>,
+    exit_code: Option<i32>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameActivity {
+    game_id: String,
+    process: Option<GameProcessState>,
+    total_playtime_seconds: i64,
+    completed_sessions: i64,
+    last_played_at: Option<String>,
+}
+
+#[derive(Default)]
+struct ProcessManager {
+    processes: Mutex<HashMap<String, GameProcessState>>,
+    next_execution_id: AtomicU64,
+}
+
+impl ProcessManager {
+    fn begin_launch(&self, game_id: &str) -> Result<GameProcessState, String> {
+        let mut processes = self
+            .processes
+            .lock()
+            .map_err(|_| "O estado de processos ficou indisponível.".to_string())?;
+
+        if let Some(current) = processes.get(game_id) {
+            if matches!(current.status.as_str(), "starting" | "running") {
+                return Err(format!(
+                    "{} já está {}.",
+                    game_id,
+                    if current.status == "starting" {
+                        "iniciando"
+                    } else {
+                        "em execução"
+                    }
+                ));
+            }
+        }
+
+        let sequence = self.next_execution_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let execution_id = format!("{game_id}-{}-{sequence}", unix_timestamp_millis());
+        let state = GameProcessState {
+            execution_id,
+            game_id: game_id.to_string(),
+            status: "starting".to_string(),
+            process_id: None,
+            runner: None,
+            session_id: None,
+            started_at: None,
+            ended_at: None,
+            exit_code: None,
+            error: None,
+        };
+
+        processes.insert(game_id.to_string(), state.clone());
+        Ok(state)
+    }
+
+    fn mark_running(
+        &self,
+        game_id: &str,
+        execution_id: &str,
+        process_id: u32,
+        runner: &str,
+        session_id: Option<i64>,
+        started_at: i64,
+    ) -> Result<GameProcessState, String> {
+        self.update_matching(game_id, execution_id, |state| {
+            state.status = "running".to_string();
+            state.process_id = Some(process_id);
+            state.runner = Some(runner.to_string());
+            state.session_id = session_id;
+            state.started_at = Some(started_at);
+            state.ended_at = None;
+            state.exit_code = None;
+            state.error = None;
+        })
+    }
+
+    fn mark_finished(
+        &self,
+        game_id: &str,
+        execution_id: &str,
+        status: &str,
+        ended_at: i64,
+        exit_code: Option<i32>,
+        error: Option<String>,
+    ) -> Result<GameProcessState, String> {
+        self.update_matching(game_id, execution_id, |state| {
+            state.status = status.to_string();
+            state.ended_at = Some(ended_at);
+            state.exit_code = exit_code;
+            state.error = error;
+        })
+    }
+
+    fn snapshot(&self, game_id: &str) -> Result<Option<GameProcessState>, String> {
+        self.processes
+            .lock()
+            .map(|processes| processes.get(game_id).cloned())
+            .map_err(|_| "O estado de processos ficou indisponível.".to_string())
+    }
+
+    fn update_matching<F>(
+        &self,
+        game_id: &str,
+        execution_id: &str,
+        update: F,
+    ) -> Result<GameProcessState, String>
+    where
+        F: FnOnce(&mut GameProcessState),
+    {
+        let mut processes = self
+            .processes
+            .lock()
+            .map_err(|_| "O estado de processos ficou indisponível.".to_string())?;
+        let state = processes
+            .get_mut(game_id)
+            .ok_or_else(|| format!("Não há estado de processo registrado para {game_id}."))?;
+
+        if state.execution_id != execution_id {
+            return Err(format!(
+                "A execução {} de {} não é mais a execução ativa.",
+                execution_id, game_id
+            ));
+        }
+
+        update(state);
+        Ok(state.clone())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -296,6 +445,320 @@ fn manifests_dir() -> Result<PathBuf, String> {
 
 fn open_database(app: &tauri::AppHandle) -> Result<Connection, String> {
     database::open(app)
+}
+
+fn unix_timestamp_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0)
+}
+
+fn unix_timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn emit_process_state(app: &tauri::AppHandle, state: &GameProcessState) {
+    let _ = app.emit("game-process-state", state);
+}
+
+fn build_game_activity(app: &tauri::AppHandle, game_id: &str) -> Result<GameActivity, String> {
+    let connection = open_database(app)?;
+    let summary: PlaytimeSummary = database::get_playtime_summary(&connection, game_id)?;
+    let process = app.state::<ProcessManager>().snapshot(game_id)?;
+
+    Ok(GameActivity {
+        game_id: game_id.to_string(),
+        process,
+        total_playtime_seconds: summary.total_seconds,
+        completed_sessions: summary.completed_sessions,
+        last_played_at: summary.last_played_at,
+    })
+}
+
+fn emit_game_activity(app: &tauri::AppHandle, game_id: &str) {
+    if let Ok(activity) = build_game_activity(app, game_id) {
+        let _ = app.emit("game-activity-updated", activity);
+    }
+}
+
+fn begin_tracked_launch(
+    app: &tauri::AppHandle,
+    game_id: &str,
+) -> Result<GameProcessState, String> {
+    let state = app.state::<ProcessManager>().begin_launch(game_id)?;
+    emit_process_state(app, &state);
+    emit_game_activity(app, game_id);
+    Ok(state)
+}
+
+fn fail_tracked_launch(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    execution_id: &str,
+    error: &str,
+) {
+    let ended_at = unix_timestamp_seconds();
+    if let Ok(state) = app.state::<ProcessManager>().mark_finished(
+        game_id,
+        execution_id,
+        "failed",
+        ended_at,
+        None,
+        Some(error.to_string()),
+    ) {
+        emit_process_state(app, &state);
+        emit_game_activity(app, game_id);
+    }
+}
+
+fn prepare_tracked_game_command(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        // Coloca o comando principal e seus descendentes em um grupo próprio.
+        // Isso permite acompanhar runners que encerram o processo pai depois de
+        // entregar a execução ao Wine/Proton/UMU.
+        command.process_group(0);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_group_has_members(process_group_id: u32) -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+
+    entries.flatten().any(|entry| {
+        let file_name = entry.file_name();
+        let Some(pid_text) = file_name.to_str() else {
+            return false;
+        };
+
+        if !pid_text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return false;
+        }
+
+        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
+            return false;
+        };
+        let Some(command_end) = stat.rfind(')') else {
+            return false;
+        };
+        let remainder = stat[command_end + 1..].trim_start();
+        let Some(process_group) = remainder
+            .split_whitespace()
+            .nth(2)
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            return false;
+        };
+
+        process_group == process_group_id
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_group_has_members(_process_group_id: u32) -> bool {
+    false
+}
+
+fn tracked_process_still_running(
+    child: &mut Child,
+    process_group_id: u32,
+    direct_exit_status: &mut Option<ExitStatus>,
+) -> io::Result<bool> {
+    if direct_exit_status.is_none() {
+        if let Some(status) = child.try_wait()? {
+            *direct_exit_status = Some(status);
+        }
+    }
+
+    Ok(direct_exit_status.is_none() || process_group_has_members(process_group_id))
+}
+
+fn track_game_process(
+    app: tauri::AppHandle,
+    game_id: String,
+    execution_id: String,
+    runner: String,
+    pid: u32,
+    mut child: Child,
+) -> Result<(), String> {
+    let started_at = unix_timestamp_seconds();
+    let started_instant = Instant::now();
+    let started_at_text = started_at.to_string();
+    let session_id = match open_database(&app).and_then(|connection| {
+        database::create_playtime_session(
+            &connection,
+            &game_id,
+            Some(pid),
+            Some(&runner),
+            &started_at_text,
+        )
+    }) {
+        Ok(session) => Some(session.id),
+        Err(error) => {
+            let _ = append_runner_log(
+                &app,
+                &game_id,
+                &[format!("playtime_session_start_error={error}")],
+            );
+            None
+        }
+    };
+
+    match app.state::<ProcessManager>().mark_running(
+        &game_id,
+        &execution_id,
+        pid,
+        &runner,
+        session_id,
+        started_at,
+    ) {
+        Ok(state) => emit_process_state(&app, &state),
+        Err(error) => {
+            let _ = append_runner_log(
+                &app,
+                &game_id,
+                &[format!("process_state_running_error={error}")],
+            );
+        }
+    }
+    let _ = append_runner_log(
+        &app,
+        &game_id,
+        &[
+            format!("process_execution_id={execution_id}"),
+            format!("playtime_session_id={session_id:?}"),
+            format!("playtime_started_at={started_at}"),
+        ],
+    );
+    emit_game_activity(&app, &game_id);
+
+    thread::spawn(move || {
+        let mut next_heartbeat = PLAYTIME_HEARTBEAT_INTERVAL_SECONDS;
+        let mut direct_exit_status: Option<ExitStatus> = None;
+        let wait_result = loop {
+            match tracked_process_still_running(&mut child, pid, &mut direct_exit_status) {
+                Ok(true) => {
+                    let elapsed_seconds = started_instant.elapsed().as_secs();
+
+                    if elapsed_seconds >= next_heartbeat {
+                        if let Some(session_id) = session_id {
+                            let heartbeat_result = open_database(&app).and_then(|connection| {
+                                database::update_playtime_session_progress(
+                                    &connection,
+                                    session_id,
+                                    elapsed_seconds.min(i64::MAX as u64) as i64,
+                                )
+                            });
+
+                            if let Err(error) = heartbeat_result {
+                                let _ = append_runner_log(
+                                    &app,
+                                    &game_id,
+                                    &[format!("playtime_heartbeat_error={error}")],
+                                );
+                            }
+                        }
+
+                        emit_game_activity(&app, &game_id);
+                        next_heartbeat = elapsed_seconds
+                            .saturating_add(PLAYTIME_HEARTBEAT_INTERVAL_SECONDS);
+                    }
+
+                    thread::sleep(Duration::from_secs(PROCESS_POLL_INTERVAL_SECONDS));
+                }
+                Ok(false) => {
+                    break Ok(direct_exit_status.expect(
+                        "o processo direto deve ter encerrado quando o grupo deixa de existir",
+                    ));
+                }
+                Err(error) => break Err(error),
+            }
+        };
+        let ended_at = unix_timestamp_seconds();
+        let duration_seconds = started_instant
+            .elapsed()
+            .as_secs()
+            .min(i64::MAX as u64) as i64;
+
+        let (process_status, exit_code, end_reason, wait_error, mut log_lines) =
+            match wait_result {
+                Ok(status) => {
+                    let exit_code = status.code();
+                    let end_reason = if status.success() {
+                        "normal"
+                    } else {
+                        "nonzero_exit"
+                    };
+                    (
+                        "exited",
+                        exit_code,
+                        end_reason,
+                        None,
+                        vec![
+                            format!("process_pid={pid}"),
+                            format!("process_exit_status={status}"),
+                            format!("process_exit_code={exit_code:?}"),
+                        ],
+                    )
+                }
+                Err(error) => (
+                    "failed",
+                    None,
+                    "wait_error",
+                    Some(error.to_string()),
+                    vec![
+                        format!("process_pid={pid}"),
+                        format!("process_wait_error={error}"),
+                    ],
+                ),
+            };
+
+        log_lines.push(format!("playtime_duration_seconds={duration_seconds}"));
+        log_lines.push(format!("playtime_end_reason={end_reason}"));
+        log_lines.push(format!("process_execution_id={execution_id}"));
+
+        if let Some(session_id) = session_id {
+            let finalization = open_database(&app).and_then(|connection| {
+                database::finalize_playtime_session(
+                    &connection,
+                    session_id,
+                    &ended_at.to_string(),
+                    duration_seconds,
+                    exit_code.map(i64::from),
+                    end_reason,
+                )
+            });
+
+            match finalization {
+                Ok(_) => log_lines.push(format!("playtime_session_finalized={session_id}")),
+                Err(error) => {
+                    log_lines.push(format!("playtime_session_finalize_error={error}"));
+                }
+            }
+        }
+
+        let _ = append_runner_log(&app, &game_id, &log_lines);
+
+        if let Ok(state) = app.state::<ProcessManager>().mark_finished(
+            &game_id,
+            &execution_id,
+            process_status,
+            ended_at,
+            exit_code,
+            wait_error,
+        ) {
+            emit_process_state(&app, &state);
+        }
+        emit_game_activity(&app, &game_id);
+    });
+
+    Ok(())
 }
 
 fn get_game_settings_record(
@@ -2761,6 +3224,31 @@ fn launch_install(
     install: &GameInstall,
     action: &str,
 ) -> Result<LaunchResult, String> {
+    let process_state = begin_tracked_launch(app, game_id)?;
+    let result = launch_install_inner(
+        app,
+        game_id,
+        manifest,
+        install,
+        action,
+        &process_state.execution_id,
+    );
+
+    if let Err(error) = &result {
+        fail_tracked_launch(app, game_id, &process_state.execution_id, error);
+    }
+
+    result
+}
+
+fn launch_install_inner(
+    app: &tauri::AppHandle,
+    game_id: &str,
+    manifest: &GameManifest,
+    install: &GameInstall,
+    action: &str,
+    execution_id: &str,
+) -> Result<LaunchResult, String> {
     let connection = open_database(app)?;
     let settings = get_game_settings_record(&connection, game_id)?;
     let mut effective_manifest = manifest.clone();
@@ -2849,6 +3337,7 @@ fn launch_install(
     apply_runner_command_environment(&mut command, &runner_command);
 
     let log_path = attach_process_logs(app, game_id, &mut command)?;
+    prepare_tracked_game_command(&mut command);
     let child = command.spawn().map_err(|error| {
         format!(
             "Não foi possível iniciar {} usando {}: {error}. Log: {}",
@@ -2867,7 +3356,14 @@ fn launch_install(
             format!("process_pid={process_id}"),
         ],
     )?;
-    log_process_exit(app.clone(), game_id.to_string(), process_id, child);
+    track_game_process(
+        app.clone(),
+        game_id.to_string(),
+        execution_id.to_string(),
+        runner_command.runner_kind.clone(),
+        process_id,
+        child,
+    )?;
 
     Ok(LaunchResult {
         game_id: game_id.to_string(),
@@ -3702,7 +4198,10 @@ fn verify_game_install(
 
 #[cfg(test)]
 mod tests {
-    use super::{missing_required_files, verify_configured_checksums, VerificationChecksumConfig};
+    use super::{
+        missing_required_files, verify_configured_checksums, ProcessManager,
+        VerificationChecksumConfig,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3834,12 +4333,74 @@ mod tests {
         assert!(verify_configured_checksums(&install_path, true, &unsupported_algorithm).is_err());
         assert!(verify_configured_checksums(&install_path, true, &invalid_value).is_err());
     }
+
+    #[test]
+    fn process_manager_blocks_duplicate_active_launches_and_allows_relaunch_after_exit() {
+        let manager = ProcessManager::default();
+        let first = manager.begin_launch("medivia").expect("begin first launch");
+
+        assert!(manager.begin_launch("medivia").is_err());
+
+        manager
+            .mark_running(
+                "medivia",
+                &first.execution_id,
+                1234,
+                "native",
+                Some(10),
+                1_700_000_000,
+            )
+            .expect("mark process running");
+        assert!(manager.begin_launch("medivia").is_err());
+
+        manager
+            .mark_finished(
+                "medivia",
+                &first.execution_id,
+                "exited",
+                1_700_000_120,
+                Some(0),
+                None,
+            )
+            .expect("mark process exited");
+
+        let second = manager
+            .begin_launch("medivia")
+            .expect("allow second launch after exit");
+        assert_ne!(first.execution_id, second.execution_id);
+    }
 }
 
 #[tauri::command]
 fn list_installs(app: tauri::AppHandle) -> Result<Vec<GameInstall>, String> {
     let connection = open_database(&app)?;
     database::list_installs(&connection)
+}
+
+#[tauri::command]
+fn get_game_activity(app: tauri::AppHandle, game_id: String) -> Result<GameActivity, String> {
+    let game_id = game_id.trim();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    build_game_activity(&app, game_id)
+}
+
+#[tauri::command]
+fn list_game_playtime_sessions(
+    app: tauri::AppHandle,
+    game_id: String,
+) -> Result<Vec<PlaytimeSession>, String> {
+    let game_id = game_id.trim();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio.".to_string());
+    }
+
+    let connection = open_database(&app)?;
+    database::list_sessions_by_game(&connection, game_id)
 }
 
 #[tauri::command]
@@ -4059,6 +4620,7 @@ fn download_and_run_installer(
     apply_runner_command_environment(&mut command, &runner_command);
 
     let log_path = attach_process_logs(&app, &game_id, &mut command)?;
+    prepare_tracked_game_command(&mut command);
 
     let child = command.spawn().map_err(|error| {
         log_error_message(
@@ -4660,6 +5222,25 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
         return Err("ID do jogo não pode ser vazio.".to_string());
     }
 
+    let process_state = begin_tracked_launch(&app, &game_id)?;
+    let result = launch_game_inner(
+        app.clone(),
+        game_id.clone(),
+        &process_state.execution_id,
+    );
+
+    if let Err(error) = &result {
+        fail_tracked_launch(&app, &game_id, &process_state.execution_id, error);
+    }
+
+    result
+}
+
+fn launch_game_inner(
+    app: tauri::AppHandle,
+    game_id: String,
+    execution_id: &str,
+) -> Result<LaunchResult, String> {
     let attempt_log_path = append_runner_log(
         &app,
         &game_id,
@@ -4798,7 +5379,14 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
             format!("process_pid={process_id}"),
         ],
     )?;
-    log_process_exit(app.clone(), game_id.clone(), process_id, child);
+    track_game_process(
+        app.clone(),
+        game_id.clone(),
+        execution_id.to_string(),
+        runner_command.runner_kind.clone(),
+        process_id,
+        child,
+    )?;
 
     Ok(LaunchResult {
         game_id,
@@ -4811,11 +5399,28 @@ fn launch_game(app: tauri::AppHandle, game_id: String) -> Result<LaunchResult, S
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(ProcessManager::default())
+        .setup(|app| {
+            let connection = open_database(app.handle())
+                .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
+            let recovered = database::mark_open_sessions_as_interrupted(&connection)
+                .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
+
+            if recovered > 0 {
+                eprintln!(
+                    "Foram encerradas {recovered} sessão(ões) de tempo jogado deixadas abertas pela execução anterior."
+                );
+            }
+
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             list_games,
             list_installs,
+            get_game_activity,
+            list_game_playtime_sessions,
             get_game_settings,
             save_game_settings,
             reset_game_settings,

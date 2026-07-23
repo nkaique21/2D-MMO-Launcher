@@ -1,0 +1,114 @@
+# Manifestos
+
+## Papel
+
+Cada arquivo em `src-tauri/manifests/*.json` descreve um jogo e suas
+possibilidades. Adicionar um jogo deve exigir principalmente manifesto e assets.
+
+## Áreas conceituais
+
+```json
+{
+  "id": "...",
+  "name": "...",
+  "description": "...",
+  "assets": {},
+  "installation": {},
+  "launch": {},
+  "update": {},
+  "verification": {}
+}
+```
+
+## Launch
+
+Campos usados ou suportados conceitualmente:
+
+- `runner`
+- `executable`
+- `args`
+- `workingDir`
+- `env`
+- `unsetEnv`
+- `battlEye`
+
+O runner pode ser uma categoria genérica. A configuração local pode selecionar
+um runner concreto detectado.
+
+## BattlEye
+
+É opcional. Jogos sem o bloco mantêm o fluxo comum.
+
+Pode declarar:
+
+- executável;
+- argumentos;
+- base do caminho;
+- working directory;
+- modo de lançamento.
+
+Quando `launchMode` for `main`, o executável do BattlEye substitui o processo
+principal e deve ser considerado pela verificação e reconciliação.
+
+## Instalação
+
+Métodos previstos ou atuais:
+
+- `existing`
+- `archive`
+- `windowsInstaller`
+- AppImage
+- launcher externo
+- Steam
+
+Campos dependem do método, incluindo:
+
+- URL;
+- formato;
+- headers;
+- runner;
+- prefixo compatível;
+- diretório alvo;
+- remoção de pasta superior;
+- auto-launch.
+
+## Update
+
+Estratégias atuais:
+
+### `externalLauncher`
+
+Executa um updater/launcher oficial com runner, caminho, argumentos e ambiente
+declarados no manifesto.
+
+### `remoteManifest`
+
+Baixa um manifesto remoto, verifica arquivos e aplica divergências em fluxo
+transacional.
+
+Pode declarar concorrência máxima, formato remoto, alvo e bases de caminho.
+
+## Verification
+
+### `requiredFiles`
+
+Checagem estrutural rápida de arquivos e diretórios relativos à instalação.
+
+### `checksums`
+
+Checagem opcional de integridade. O algoritmo inicial suportado é CRC32.
+
+O backend deve rejeitar:
+
+- caminhos absolutos;
+- travessia;
+- algoritmo desconhecido;
+- valor malformado.
+
+## Regras
+
+- Tipos Rust e TypeScript devem permanecer compatíveis.
+- Campo novo deve ser opcional quando jogos existentes não o exigirem.
+- Um campo deve representar comportamento reutilizável.
+- Valores específicos de máquina devem ser override local quando possível.
+- Não mover configuração local do usuário para o manifesto.

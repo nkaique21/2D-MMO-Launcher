@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 use tauri::Manager;
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +43,29 @@ pub(crate) struct ManagedRunner {
     pub(crate) updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlaytimeSession {
+    pub(crate) id: i64,
+    pub(crate) game_id: String,
+    pub(crate) process_id: Option<i64>,
+    pub(crate) runner: Option<String>,
+    pub(crate) started_at: String,
+    pub(crate) ended_at: Option<String>,
+    pub(crate) duration_seconds: Option<i64>,
+    pub(crate) exit_code: Option<i64>,
+    pub(crate) end_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlaytimeSummary {
+    pub(crate) game_id: String,
+    pub(crate) total_seconds: i64,
+    pub(crate) completed_sessions: i64,
+    pub(crate) last_played_at: Option<String>,
+}
+
 pub(crate) fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|error| {
         format!("Não foi possível resolver o diretório de dados do app: {error}")
@@ -60,6 +84,9 @@ pub(crate) fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
 fn open_path(path: &Path) -> Result<Connection, String> {
     let mut connection = Connection::open(path)
         .map_err(|error| format!("Não foi possível abrir o banco {}: {error}", path.display()))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("Não foi possível configurar espera do SQLite: {error}"))?;
 
     migrate(&mut connection)?;
 
@@ -168,6 +195,28 @@ const MIGRATIONS: &[Migration] = &[
             );
             CREATE INDEX IF NOT EXISTS runners_kind_status_idx
                 ON runners (kind, status);
+        ",
+    },
+    Migration {
+        version: 4,
+        name: "create_playtime_sessions",
+        sql: "
+            CREATE TABLE IF NOT EXISTS playtime_sessions (
+                id INTEGER PRIMARY KEY NOT NULL,
+                game_id TEXT NOT NULL,
+                process_id INTEGER,
+                runner TEXT,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                duration_seconds INTEGER,
+                exit_code INTEGER,
+                end_reason TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS playtime_sessions_game_id_idx
+                ON playtime_sessions (game_id);
+            CREATE INDEX IF NOT EXISTS playtime_sessions_open_idx
+                ON playtime_sessions (ended_at) WHERE ended_at IS NULL;
         ",
     },
 ];
@@ -444,9 +493,219 @@ pub(crate) fn reset_game_settings(
     Ok(empty_game_settings(game_id))
 }
 
+// PlaytimeSession functions
+
+pub(crate) fn create_playtime_session(
+    connection: &Connection,
+    game_id: &str,
+    process_id: Option<u32>,
+    runner: Option<&str>,
+    started_at: &str,
+) -> Result<PlaytimeSession, String> {
+    let game_id = game_id.trim();
+
+    if game_id.is_empty() {
+        return Err("ID do jogo não pode ser vazio ao iniciar uma sessão.".to_string());
+    }
+
+    connection
+        .execute(
+            "
+            INSERT INTO playtime_sessions (
+                game_id, process_id, runner, started_at, duration_seconds
+            ) VALUES (?1, ?2, ?3, ?4, 0)
+            ",
+            params![game_id, process_id.map(i64::from), runner, started_at],
+        )
+        .map_err(|error| format!("Não foi possível criar sessão de tempo jogado: {error}"))?;
+
+    let session_id = connection.last_insert_rowid();
+
+    get_playtime_session(connection, session_id)?.ok_or_else(|| {
+        format!("Sessão de tempo jogado {session_id} não encontrada após a criação.")
+    })
+}
+
+pub(crate) fn update_playtime_session_progress(
+    connection: &Connection,
+    session_id: i64,
+    duration_seconds: i64,
+) -> Result<bool, String> {
+    connection
+        .execute(
+            "
+            UPDATE playtime_sessions
+            SET duration_seconds = ?2
+            WHERE id = ?1 AND ended_at IS NULL
+            ",
+            params![session_id, duration_seconds.max(0)],
+        )
+        .map(|updated_rows| updated_rows > 0)
+        .map_err(|error| {
+            format!("Não foi possível atualizar o progresso da sessão {session_id}: {error}")
+        })
+}
+
+pub(crate) fn get_playtime_session(
+    connection: &Connection,
+    session_id: i64,
+) -> Result<Option<PlaytimeSession>, String> {
+    let result = connection.query_row(
+        "
+        SELECT id, game_id, process_id, runner, started_at, ended_at,
+               duration_seconds, exit_code, end_reason
+        FROM playtime_sessions
+        WHERE id = ?1
+        ",
+        params![session_id],
+        playtime_session_from_row,
+    );
+
+    match result {
+        Ok(session) => Ok(Some(session)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(format!(
+            "Não foi possível carregar sessão de tempo jogado {session_id}: {error}"
+        )),
+    }
+}
+
+pub(crate) fn list_sessions_by_game(
+    connection: &Connection,
+    game_id: &str,
+) -> Result<Vec<PlaytimeSession>, String> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT id, game_id, process_id, runner, started_at, ended_at,
+                   duration_seconds, exit_code, end_reason
+            FROM playtime_sessions
+            WHERE game_id = ?1
+            ORDER BY started_at DESC, id DESC
+            ",
+        )
+        .map_err(|error| format!("Não foi possível consultar sessões do jogo: {error}"))?;
+
+    let sessions = statement
+        .query_map(params![game_id], playtime_session_from_row)
+        .map_err(|error| format!("Não foi possível ler sessões do jogo: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Registro de sessão do jogo inválido: {error}"))?;
+
+    Ok(sessions)
+}
+
+pub(crate) fn finalize_playtime_session(
+    connection: &Connection,
+    session_id: i64,
+    ended_at: &str,
+    duration_seconds: i64,
+    exit_code: Option<i64>,
+    end_reason: &str,
+) -> Result<PlaytimeSession, String> {
+    let updated_rows = connection
+        .execute(
+            "
+            UPDATE playtime_sessions
+            SET ended_at = ?2,
+                duration_seconds = ?3,
+                exit_code = ?4,
+                end_reason = ?5
+            WHERE id = ?1 AND ended_at IS NULL
+            ",
+            params![
+                session_id,
+                ended_at,
+                duration_seconds.max(0),
+                exit_code,
+                end_reason
+            ],
+        )
+        .map_err(|error| format!("Não foi possível finalizar sessão de tempo jogado: {error}"))?;
+
+    if updated_rows == 0 {
+        return match get_playtime_session(connection, session_id)? {
+            Some(_) => Err(format!(
+                "A sessão de tempo jogado {session_id} já foi finalizada."
+            )),
+            None => Err(format!(
+                "Sessão de tempo jogado {session_id} não encontrada para finalização."
+            )),
+        };
+    }
+
+    get_playtime_session(connection, session_id)?.ok_or_else(|| {
+        format!("Sessão de tempo jogado {session_id} não encontrada após a finalização.")
+    })
+}
+
+pub(crate) fn mark_open_sessions_as_interrupted(
+    connection: &Connection,
+) -> Result<usize, String> {
+    connection
+        .execute(
+            "
+            UPDATE playtime_sessions
+            SET duration_seconds = COALESCE(duration_seconds, 0),
+                ended_at = CAST(
+                    CAST(started_at AS INTEGER) + COALESCE(duration_seconds, 0)
+                    AS TEXT
+                ),
+                exit_code = NULL,
+                end_reason = 'interrupted'
+            WHERE ended_at IS NULL
+            ",
+            [],
+        )
+        .map_err(|error| {
+            format!("Não foi possível marcar sessões abertas como interrompidas: {error}")
+        })
+}
+
+pub(crate) fn get_playtime_summary(
+    connection: &Connection,
+    game_id: &str,
+) -> Result<PlaytimeSummary, String> {
+    connection
+        .query_row(
+            "
+            SELECT COALESCE(SUM(duration_seconds), 0),
+                   COUNT(*),
+                   MAX(ended_at)
+            FROM playtime_sessions
+            WHERE game_id = ?1 AND ended_at IS NOT NULL
+            ",
+            params![game_id],
+            |row| {
+                Ok(PlaytimeSummary {
+                    game_id: game_id.to_string(),
+                    total_seconds: row.get(0)?,
+                    completed_sessions: row.get(1)?,
+                    last_played_at: row.get(2)?,
+                })
+            },
+        )
+        .map_err(|error| format!("Não foi possível calcular o tempo jogado de {game_id}: {error}"))
+}
+
+fn playtime_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaytimeSession> {
+    Ok(PlaytimeSession {
+        id: row.get(0)?,
+        game_id: row.get(1)?,
+        process_id: row.get(2)?,
+        runner: row.get(3)?,
+        started_at: row.get(4)?,
+        ended_at: row.get(5)?,
+        duration_seconds: row.get(6)?,
+        exit_code: row.get(7)?,
+        end_reason: row.get(8)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn migrates_empty_database_to_current_version() {
@@ -458,6 +717,7 @@ mod tests {
         assert!(table_exists(&connection, "installs"));
         assert!(table_exists(&connection, "game_settings"));
         assert!(table_exists(&connection, "runners"));
+        assert!(table_exists(&connection, "playtime_sessions"));
     }
 
     #[test]
@@ -483,6 +743,37 @@ mod tests {
         let install = get_install(&connection, "legacy").expect("legacy install preserved");
         assert_eq!(install.install_path, "/games/legacy");
         assert_eq!(schema_version(&connection).unwrap(), CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_version_three_to_playtime_sessions_without_losing_data() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+
+        for migration in MIGRATIONS.iter().filter(|migration| migration.version <= 3) {
+            connection
+                .execute_batch(migration.sql)
+                .expect("apply legacy migration");
+            connection
+                .pragma_update(None, "user_version", migration.version)
+                .expect("set legacy schema version");
+        }
+        connection
+            .execute(
+                "INSERT INTO installs (game_id, install_path) VALUES (?1, ?2)",
+                params!["medivia", "/games/medivia"],
+            )
+            .expect("insert legacy install");
+
+        migrate(&mut connection).expect("migrate schema version 3");
+
+        assert_eq!(schema_version(&connection).unwrap(), CURRENT_SCHEMA_VERSION);
+        assert!(table_exists(&connection, "playtime_sessions"));
+        assert_eq!(
+            get_install(&connection, "medivia")
+                .expect("legacy install preserved")
+                .install_path,
+            "/games/medivia"
+        );
     }
 
     #[test]
@@ -526,6 +817,178 @@ mod tests {
         assert!(get_managed_runner(&connection, &runner.id)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn creates_and_finalizes_playtime_session() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        migrate(&mut connection).unwrap();
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("relógio do sistema válido")
+            .as_secs()
+            .to_string();
+
+        let session = create_playtime_session(
+            &connection,
+            "ravenquest",
+            Some(12345),
+            Some("proton"),
+            &timestamp,
+        )
+        .expect("create session");
+
+        assert!(session.ended_at.is_none());
+        assert_eq!(session.duration_seconds, Some(0));
+        assert_eq!(session.game_id, "ravenquest");
+        assert_eq!(session.process_id, Some(12345));
+
+        let finalized = finalize_playtime_session(
+            &connection,
+            session.id,
+            &timestamp,
+            3600,
+            Some(0),
+            "normal",
+        )
+        .expect("finalize session");
+
+        assert!(finalized.ended_at.is_some());
+        assert_eq!(finalized.duration_seconds, Some(3600));
+        assert_eq!(finalized.exit_code, Some(0));
+        assert_eq!(finalized.end_reason, Some("normal".to_string()));
+
+        let second_finalize = finalize_playtime_session(
+            &connection,
+            session.id,
+            &timestamp,
+            7200,
+            Some(0),
+            "normal",
+        );
+        assert!(second_finalize.is_err());
+    }
+
+    #[test]
+    fn lists_sessions_by_game() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        migrate(&mut connection).unwrap();
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("relógio do sistema válido")
+            .as_secs()
+            .to_string();
+
+        create_playtime_session(&connection, "ravenquest", None, None, &timestamp)
+            .expect("create session 1");
+        create_playtime_session(&connection, "medivia", None, None, &timestamp)
+            .expect("create session 2");
+
+        let ravenquest_sessions =
+            list_sessions_by_game(&connection, "ravenquest").expect("list ravenquest sessions");
+        assert_eq!(ravenquest_sessions.len(), 1);
+
+        let medivia_sessions =
+            list_sessions_by_game(&connection, "medivia").expect("list medivia sessions");
+        assert_eq!(medivia_sessions.len(), 1);
+    }
+
+    #[test]
+    fn marks_open_sessions_as_interrupted() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        migrate(&mut connection).unwrap();
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("relógio do sistema válido")
+            .as_secs()
+            .to_string();
+
+        let session = create_playtime_session(&connection, "ravenquest", None, None, &timestamp)
+            .expect("create open session");
+        assert!(update_playtime_session_progress(&connection, session.id, 45)
+            .expect("persist heartbeat"));
+
+        let open_before = get_open_sessions(&connection).expect("get open sessions before");
+        assert_eq!(open_before.len(), 1);
+
+        let interrupted_count =
+            mark_open_sessions_as_interrupted(&connection).expect("mark interrupted");
+        assert_eq!(interrupted_count, 1);
+
+        let open_after = get_open_sessions(&connection).expect("get open sessions after");
+        assert_eq!(open_after.len(), 0);
+
+        let sessions = list_sessions_by_game(&connection, "ravenquest").expect("list sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].end_reason, Some("interrupted".to_string()));
+        assert_eq!(sessions[0].duration_seconds, Some(45));
+        let expected_end = (timestamp.parse::<i64>().unwrap() + 45).to_string();
+        assert_eq!(
+            sessions[0].ended_at.as_deref(),
+            Some(expected_end.as_str())
+        );
+    }
+
+    #[test]
+    fn calculates_accumulated_playtime_from_completed_sessions_only() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        migrate(&mut connection).unwrap();
+
+        let timestamp = "1700000000";
+        let first = create_playtime_session(
+            &connection,
+            "ravenquest",
+            Some(100),
+            Some("proton"),
+            timestamp,
+        )
+        .expect("create first session");
+        finalize_playtime_session(
+            &connection,
+            first.id,
+            "1700000120",
+            120,
+            Some(0),
+            "normal",
+        )
+        .expect("finalize first session");
+
+        let second = create_playtime_session(
+            &connection,
+            "ravenquest",
+            Some(101),
+            Some("proton"),
+            "1700000200",
+        )
+        .expect("create second session");
+        finalize_playtime_session(
+            &connection,
+            second.id,
+            "1700000500",
+            300,
+            Some(1),
+            "nonzero_exit",
+        )
+        .expect("finalize second session");
+
+        create_playtime_session(
+            &connection,
+            "ravenquest",
+            Some(102),
+            Some("proton"),
+            "1700000600",
+        )
+        .expect("create open session");
+
+        let summary = get_playtime_summary(&connection, "ravenquest")
+            .expect("calculate playtime summary");
+
+        assert_eq!(summary.total_seconds, 420);
+        assert_eq!(summary.completed_sessions, 2);
+        assert_eq!(summary.last_played_at.as_deref(), Some("1700000500"));
     }
 
     fn table_exists(connection: &Connection, table: &str) -> bool {

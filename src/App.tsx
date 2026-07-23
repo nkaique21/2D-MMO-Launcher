@@ -4,6 +4,7 @@ import {
   listGames,
   listInstalls,
   listRunners,
+  getGameActivity,
   getLatestProtonGeRelease,
   installLatestProtonGe,
   removeManagedRunner,
@@ -22,7 +23,7 @@ import {
   saveGameSettings,
   verifyGameInstall,
 } from './lib/tauri';
-import type { GameInstall, GameManifest, GameSettings, GameUpdateProgress, InstallVerificationResult, ManagedRunnerRelease, RunnerInfo, RunnerInstallProgress } from './types/manifest';
+import type { GameActivity, GameInstall, GameManifest, GameProcessState, GameSettings, GameUpdateProgress, InstallVerificationResult, ManagedRunnerRelease, RunnerInfo, RunnerInstallProgress } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
 
@@ -242,6 +243,29 @@ function formatElapsedSeconds(timestamp: number | null, now: number) {
   return `há ${elapsedSeconds}s`;
 }
 
+function formatPlaytime(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+
+  if (safeSeconds === 0) return '0 min';
+  if (hours > 0) return `${hours}h ${minutes.toString().padStart(2, '0')}min`;
+  if (minutes > 0) return `${minutes} min`;
+  return '< 1 min';
+}
+
+function formatLastPlayed(timestamp: string | null | undefined) {
+  if (!timestamp) return 'Ainda não jogado';
+
+  const seconds = Number(timestamp);
+  if (!Number.isFinite(seconds)) return timestamp;
+
+  return new Date(seconds * 1000).toLocaleString('pt-BR', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  });
+}
+
 function isUpdateFinished(progress: GameUpdateProgress | null) {
   return progress?.status === 'done' || progress?.status === 'error';
 }
@@ -317,6 +341,7 @@ function App() {
   const [manifests, setManifests] = useState<GameManifest[]>([]);
   const [installs, setInstalls] = useState<GameInstall[]>([]);
   const [runners, setRunners] = useState<RunnerInfo[]>([]);
+  const [gameActivity, setGameActivity] = useState<GameActivity | null>(null);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -487,7 +512,76 @@ function App() {
     setGameSettings(null);
     setSettingsRunner('');
     setSettingsEnv({});
+    setGameActivity(null);
   }, [selectedGameId]);
+
+  useEffect(() => {
+    if (!selectedGameId) return undefined;
+
+    let isMounted = true;
+
+    void getGameActivity(selectedGameId)
+      .then((activity) => {
+        if (isMounted) setGameActivity(activity);
+      })
+      .catch((error: unknown) => {
+        if (isMounted) setActionError(error instanceof Error ? error.message : String(error));
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedGameId]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const unlistenPromise = listen<GameActivity>('game-activity-updated', (event) => {
+      if (!isMounted || event.payload.gameId !== selectedGameId) return;
+      setGameActivity(event.payload);
+    });
+
+    return () => {
+      isMounted = false;
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [selectedGameId]);
+
+  useEffect(() => {
+    if (!selectedGameId) return undefined;
+
+    const processIsActive = gameActivity?.gameId === selectedGameId
+      && (gameActivity.process?.status === 'starting' || gameActivity.process?.status === 'running');
+
+    if (!processIsActive) return undefined;
+
+    let isMounted = true;
+    let requestInFlight = false;
+
+    const refreshActivity = async () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
+
+      try {
+        const activity = await getGameActivity(selectedGameId);
+        if (isMounted) setGameActivity(activity);
+      } catch (error) {
+        if (isMounted) {
+          console.warn('Não foi possível reconciliar o estado do processo do jogo.', error);
+        }
+      } finally {
+        requestInFlight = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void refreshActivity();
+    }, 2_000);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(intervalId);
+    };
+  }, [selectedGameId, gameActivity?.gameId, gameActivity?.process?.status]);
 
   useEffect(() => {
     let isMounted = true;
@@ -733,6 +827,25 @@ function App() {
   const updateStageIndex = getUpdateStageIndex(activeUpdateProgress);
   const lastUpdateEventLabel = formatElapsedSeconds(updateProgressReceivedAt, nowTimestamp);
   const isRemoteUpdateRunning = isRemoteUpdateAction(pendingActionId);
+  const activeProcess: GameProcessState | null = gameActivity?.gameId === selectedGame.id
+    ? gameActivity.process
+    : null;
+  const isGameProcessActive = activeProcess?.status === 'starting' || activeProcess?.status === 'running';
+  const activeSessionSeconds = activeProcess?.status === 'running' && activeProcess.startedAt
+    ? Math.max(0, Math.floor(nowTimestamp / 1000) - activeProcess.startedAt)
+    : 0;
+  const displayedPlaytimeSeconds = (gameActivity?.totalPlaytimeSeconds ?? 0) + activeSessionSeconds;
+  const processStatusLabel = activeProcess?.status === 'starting'
+    ? 'Iniciando'
+    : activeProcess?.status === 'running'
+      ? 'Em execução'
+      : null;
+  const activityStatusLabel = processStatusLabel
+    ?? (activeProcess?.status === 'failed'
+      ? 'Falhou'
+      : activeProcess?.status === 'exited'
+        ? 'Encerrado'
+        : 'Parado');
 
   async function executeRemoteUpdate(actionId: 'run-remote-update' | 'repair-files') {
     const isRepair = actionId === 'repair-files';
@@ -851,6 +964,9 @@ function App() {
 
     try {
       const result = await launchGame(selectedGame.id);
+      const activity = await getGameActivity(selectedGame.id);
+
+      setGameActivity(activity);
       setActionMessage(formatLaunchMessage('Jogo iniciado', result));
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
@@ -1163,6 +1279,16 @@ function App() {
                         <p className="mt-1 truncate text-xs text-white/50">
                           {selectedGame.description}
                         </p>
+                        {selectedGame.status === 'installed' && (
+                          <div className="mt-2 flex items-center gap-2 text-[0.68rem] font-bold text-white/70">
+                            <span>Tempo jogado: {formatPlaytime(displayedPlaytimeSeconds)}</span>
+                            {processStatusLabel && (
+                              <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-emerald-100 ring-1 ring-emerald-300/20">
+                                {processStatusLabel}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </section>
 
@@ -1199,12 +1325,14 @@ function App() {
                         </button>
                         <button
                           className="min-w-[190px] rounded-xl bg-white px-8 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 shadow-[0_18px_60px_rgba(0,0,0,0.35)] transition hover:-translate-y-0.5 hover:bg-purple-100 disabled:cursor-not-allowed disabled:opacity-60"
-                          disabled={isLaunching || pendingActionId === 'primary-install' || isRemoteUpdateRunning}
+                          disabled={isLaunching || isGameProcessActive || pendingActionId === 'primary-install' || isRemoteUpdateRunning}
                           onClick={() => void handlePrimaryAction()}
                           type="button"
                         >
-                          {isLaunching
-                            ? 'Iniciando...'
+                          {activeProcess?.status === 'running'
+                            ? 'Jogando'
+                            : activeProcess?.status === 'starting' || isLaunching
+                              ? 'Iniciando...'
                             : pendingActionId === 'primary-install'
                               ? installFlow?.status === 'installing'
                                 ? 'Instalando...'
@@ -1267,7 +1395,7 @@ function App() {
                   {secondaryActions.map((action) => (
                     <button
                       className="flex min-h-0 items-center justify-between rounded-2xl px-3 py-2 text-left text-xs font-semibold leading-4 text-launcher-muted transition hover:bg-white/[0.065] hover:text-white"
-                      disabled={pendingActionId !== null || isLaunching}
+                      disabled={pendingActionId !== null || isLaunching || isGameProcessActive}
                       key={action.id}
                       onClick={() => void handleSecondaryAction(action)}
                       type="button"
@@ -1388,13 +1516,35 @@ function App() {
             <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[0.2em] text-purple-300">Detalhes</p><h2 className="mt-1 text-xl font-black">{selectedGame.name}</h2></div><button className="grid h-10 w-10 place-items-center rounded-xl bg-white/[0.07] text-xl" onClick={() => setIsDetailsOpen(false)} type="button">×</button></div>
             <p className="mt-4 text-sm leading-6 text-launcher-muted">{selectedGame.description}</p>
             {selectedInstall && <p className="mt-3 break-all rounded-xl bg-black/20 p-3 text-xs leading-5 text-white/60 ring-1 ring-white/[0.07]">{selectedInstall.installPath}</p>}
+            {selectedGame.status === 'installed' && (
+              <section className="mt-4 grid grid-cols-2 gap-2 rounded-2xl border border-emerald-300/15 bg-emerald-500/[0.045] p-3 text-xs">
+                <div className="rounded-xl bg-black/20 p-3">
+                  <p className="font-black uppercase tracking-[0.14em] text-emerald-200/70">Tempo acumulado</p>
+                  <p className="mt-2 text-lg font-black text-white">{formatPlaytime(displayedPlaytimeSeconds)}</p>
+                  <p className="mt-1 text-white/35">{gameActivity?.completedSessions ?? 0} sessão(ões) encerrada(s)</p>
+                  <p className="mt-1 truncate text-white/30" title={formatLastPlayed(gameActivity?.lastPlayedAt)}>
+                    Última: {formatLastPlayed(gameActivity?.lastPlayedAt)}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-black/20 p-3">
+                  <p className="font-black uppercase tracking-[0.14em] text-emerald-200/70">Atividade</p>
+                  <p className="mt-2 text-lg font-black text-white">{activityStatusLabel}</p>
+                  <p className="mt-1 text-white/35">{activeProcess?.processId ? `PID ${activeProcess.processId}` : 'Nenhum processo ativo'}</p>
+                </div>
+                {activeProcess?.error && (
+                  <p className="col-span-2 rounded-xl border border-red-300/15 bg-red-500/[0.06] p-3 text-red-100/80">
+                    {activeProcess.error}
+                  </p>
+                )}
+              </section>
+            )}
             <section className="mt-5">
               <p className="text-xs font-black uppercase tracking-[0.18em] text-white/40">Ações do jogo</p>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 {secondaryActions.map((action) => (
                   <button
                     className="flex min-h-14 items-center justify-between rounded-xl border border-white/[0.08] bg-white/[0.045] px-3 py-2 text-left text-xs font-semibold leading-4 text-white/65 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-45"
-                    disabled={pendingActionId !== null || isLaunching}
+                    disabled={pendingActionId !== null || isLaunching || isGameProcessActive}
                     key={action.id}
                     onClick={() => void handleSecondaryAction(action)}
                     type="button"
@@ -1496,7 +1646,7 @@ function App() {
                   && verificationResult.repairStrategy === 'remoteManifest' && (
                   <button
                     className="mt-3 w-full rounded-xl border border-sky-300/20 bg-sky-400/10 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-sky-100 transition hover:bg-sky-400/15 disabled:cursor-wait disabled:opacity-50"
-                    disabled={pendingActionId !== null || isLaunching}
+                    disabled={pendingActionId !== null || isLaunching || isGameProcessActive}
                     onClick={() => void executeRemoteUpdate('repair-files')}
                     type="button"
                   >

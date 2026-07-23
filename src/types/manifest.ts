@@ -106,6 +106,41 @@ export type LaunchResult = {
   logPath: string | null;
 };
 
+export type GameProcessStatus = 'starting' | 'running' | 'exited' | 'failed';
+
+export type GameProcessState = {
+  executionId: string;
+  gameId: string;
+  status: GameProcessStatus;
+  processId: number | null;
+  runner: string | null;
+  sessionId: number | null;
+  startedAt: number | null;
+  endedAt: number | null;
+  exitCode: number | null;
+  error: string | null;
+};
+
+export type GameActivity = {
+  gameId: string;
+  process: GameProcessState | null;
+  totalPlaytimeSeconds: number;
+  completedSessions: number;
+  lastPlayedAt: string | null;
+};
+
+export type PlaytimeSession = {
+  id: number;
+  gameId: string;
+  processId: number | null;
+  runner: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  exitCode: number | null;
+  endReason: string | null;
+};
+
 export type InstallVerificationResult = {
   gameId: string;
   valid: boolean;
