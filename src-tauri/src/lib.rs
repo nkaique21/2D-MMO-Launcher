@@ -16,11 +16,13 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
+mod archive;
 mod catalog;
 mod database;
 mod managed_runners;
 mod runners;
 
+use archive::{extract_archive, ArchiveFormat};
 use database::{GameInstall, GameSettings, PlaytimeSession, PlaytimeSummary};
 use managed_runners::{
     get_latest_proton_ge_release, install_latest_proton_ge, remove_managed_runner,
@@ -201,6 +203,8 @@ fn default_manifest_schema_version() -> u32 {
 }
 
 const HTTP_TIMEOUT_SECONDS: u64 = 60;
+const HTTP_CONNECT_TIMEOUT_SECONDS: u64 = 30;
+const HTTP_USER_AGENT: &str = "2D-MMO-Launcher/0.1 (+https://github.com/nkaique21/2D-MMO-Launcher)";
 const REMOTE_UPDATE_PROGRESS_INTERVAL: usize = 100;
 const REMOTE_UPDATE_LOG_INTERVAL: usize = 100;
 const REMOTE_UPDATE_DOWNLOAD_PROGRESS_INTERVAL: usize = 1;
@@ -2102,9 +2106,22 @@ fn parse_latest_update_progress_from_log(
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
+        .user_agent(HTTP_USER_AGENT)
+        .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECONDS))
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECONDS))
         .build()
         .map_err(|error| format!("Não foi possível preparar cliente HTTP: {error}"))
+}
+
+fn download_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .user_agent(HTTP_USER_AGENT)
+        .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECONDS))
+        .tcp_keepalive(Duration::from_secs(30))
+        // Não use timeout total aqui: arquivos grandes podem demorar mais de 60 s
+        // mesmo quando o servidor e a conexão estão funcionando corretamente.
+        .build()
+        .map_err(|error| format!("Não foi possível preparar cliente de download: {error}"))
 }
 
 fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
@@ -3279,9 +3296,16 @@ fn launch_install_inner(
         ));
     }
 
-    let command_path = command_path_for_install(&install_path, executable);
+    let command_path = if resolved_runner.kind == "command" {
+        PathBuf::from(executable)
+    } else {
+        command_path_for_install(&install_path, executable)
+    };
 
-    if !command_path.exists() && !battl_eye_replaces_main_process(manifest) {
+    if resolved_runner.kind != "command"
+        && !command_path.exists()
+        && !battl_eye_replaces_main_process(manifest)
+    {
         return Err(format!(
             "Executável não encontrado para {}: {}",
             manifest.name,
@@ -3399,7 +3423,7 @@ fn filename_from_url(url: &str) -> String {
 }
 
 fn download_file(url: &str, destination: &PathBuf) -> Result<(), String> {
-    let client = http_client()?;
+    let client = download_http_client()?;
 
     download_file_with_retry_using_client(&client, url, destination, None, None)
 }
@@ -3478,7 +3502,9 @@ fn download_file_once(
         )
     })?;
 
-    let mut request = client.get(url);
+    let mut request = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/octet-stream,*/*;q=0.8");
 
     if let Some(headers) = headers {
         for (name, value) in headers {
@@ -3488,9 +3514,30 @@ fn download_file_once(
 
     let mut response = request
         .send()
-        .map_err(|error| format!("Não foi possível baixar {url}: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Servidor retornou erro ao baixar {url}: {error}"))?;
+        .map_err(|error| format!("Não foi possível baixar {url}: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let final_url = response.url().to_string();
+        let response_preview = response
+            .text()
+            .unwrap_or_default()
+            .chars()
+            .take(500)
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let response_detail = if response_preview.is_empty() {
+            "sem corpo de resposta".to_string()
+        } else {
+            format!("resposta: {response_preview}")
+        };
+
+        return Err(format!(
+            "Servidor retornou HTTP {status} ao baixar {url} (URL final: {final_url}; {response_detail})"
+        ));
+    }
     let temporary_destination = temporary_download_path(destination);
     let mut output = fs::File::create(&temporary_destination).map_err(|error| {
         format!(
@@ -3513,98 +3560,6 @@ fn download_file_once(
     })?;
 
     Ok(())
-}
-
-fn extract_zip_archive(
-    archive_path: &Path,
-    destination: &Path,
-    strip_top_level_dir: bool,
-) -> Result<usize, String> {
-    let archive_file = fs::File::open(archive_path).map_err(|error| {
-        format!(
-            "Não foi possível abrir o arquivo ZIP {}: {error}",
-            archive_path.display()
-        )
-    })?;
-    let mut archive = zip::ZipArchive::new(archive_file).map_err(|error| {
-        format!(
-            "O arquivo baixado não é um ZIP válido ({}): {error}",
-            archive_path.display()
-        )
-    })?;
-    let mut extracted_files = 0_usize;
-
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|error| format!("Não foi possível ler a entrada {index} do ZIP: {error}"))?;
-        let enclosed_path = entry
-            .enclosed_name()
-            .ok_or_else(|| format!("O ZIP contém um caminho inseguro: {}", entry.name()))?;
-        let relative_path = if strip_top_level_dir {
-            let mut components = enclosed_path.components();
-            components.next();
-            components.as_path().to_path_buf()
-        } else {
-            enclosed_path.to_path_buf()
-        };
-
-        if relative_path.as_os_str().is_empty() {
-            continue;
-        }
-
-        let output_path = destination.join(relative_path);
-
-        if entry.is_dir() {
-            fs::create_dir_all(&output_path).map_err(|error| {
-                format!(
-                    "Não foi possível criar diretório extraído {}: {error}",
-                    output_path.display()
-                )
-            })?;
-            continue;
-        }
-
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "Não foi possível criar diretório extraído {}: {error}",
-                    parent.display()
-                )
-            })?;
-        }
-
-        let mut output = fs::File::create(&output_path).map_err(|error| {
-            format!(
-                "Não foi possível criar arquivo extraído {}: {error}",
-                output_path.display()
-            )
-        })?;
-        io::copy(&mut entry, &mut output).map_err(|error| {
-            format!(
-                "Não foi possível extrair {}: {error}",
-                output_path.display()
-            )
-        })?;
-
-        #[cfg(unix)]
-        if let Some(mode) = entry.unix_mode() {
-            use std::os::unix::fs::PermissionsExt;
-
-            fs::set_permissions(&output_path, fs::Permissions::from_mode(mode)).map_err(
-                |error| {
-                    format!(
-                        "Não foi possível restaurar permissões de {}: {error}",
-                        output_path.display()
-                    )
-                },
-            )?;
-        }
-
-        extracted_files += 1;
-    }
-
-    Ok(extracted_files)
 }
 
 fn ensure_executable_permission(path: &Path) -> Result<(), String> {
@@ -3651,12 +3606,12 @@ fn install_archive_files(
         "downloading",
         "Baixando o arquivo do cliente Linux...",
     );
-    let client = http_client()?;
+    let client = download_http_client()?;
     download_file_with_retry_using_client(
         &client,
         archive_url,
         &archive_path.to_path_buf(),
-        None,
+        Some((app, game_id, "archive")),
         Some(&method.headers),
     )?;
 
@@ -3673,8 +3628,13 @@ fn install_archive_files(
             staging_dir.display()
         )
     })?;
-    let extracted_files =
-        extract_zip_archive(archive_path, staging_dir, method.strip_top_level_dir)?;
+    let archive_format = ArchiveFormat::resolve(method.format.as_deref(), archive_url)?;
+    let extracted_files = extract_archive(
+        archive_path,
+        staging_dir,
+        archive_format,
+        method.strip_top_level_dir,
+    )?;
     let executable = manifest.launch.executable.as_deref().ok_or_else(|| {
         format!(
             "O manifesto de {} não define launch.executable.",
@@ -3683,21 +3643,34 @@ fn install_archive_files(
     })?;
     let staged_executable = command_path_for_install(staging_dir, executable);
 
-    if !staged_executable.is_file() {
-        return Err(format!(
-            "O ZIP de {} foi extraído, mas o executável esperado não foi encontrado: {}",
-            manifest.name,
-            staged_executable.display()
-        ));
-    }
+    if manifest.launch.runner == "command" {
+        let command_path = PathBuf::from(executable);
+        build_runner_command(
+            app,
+            game_id,
+            &resolve_runner(app, "command")?,
+            &command_path,
+            staging_dir,
+            &manifest.launch.args,
+            None,
+        )?;
+    } else {
+        if !staged_executable.is_file() {
+            return Err(format!(
+                "O arquivo de {} foi extraído, mas o executável esperado não foi encontrado: {}",
+                manifest.name,
+                staged_executable.display()
+            ));
+        }
 
-    emit_install_flow_progress(
-        app,
-        game_id,
-        "preparing",
-        "Preparando o executável do jogo...",
-    );
-    ensure_executable_permission(&staged_executable)?;
+        emit_install_flow_progress(
+            app,
+            game_id,
+            "preparing",
+            "Preparando o executável do jogo...",
+        );
+        ensure_executable_permission(&staged_executable)?;
+    }
 
     if target_dir.exists() {
         remove_dir_if_exists(target_dir)?;
@@ -3724,7 +3697,7 @@ fn install_archive_files(
             "archive_install_completed=true".to_string(),
             format!("archive_url={archive_url}"),
             format!("archive_path={}", archive_path.display()),
-            format!("archive_format={:?}", method.format),
+            format!("archive_format={}", archive_format.canonical_name()),
             format!("archive_strip_top_level_dir={}", method.strip_top_level_dir),
             format!("archive_extracted_files={extracted_files}"),
             format!("archive_install_path={}", target_dir.display()),
@@ -4710,17 +4683,13 @@ async fn download_and_install_archive(
         .cloned()
         .ok_or_else(|| format!("{} não possui método archive no manifesto.", manifest.name))?;
 
-    if !matches!(method.format.as_deref(), None | Some("zip")) {
-        return Err(format!(
-            "Formato de arquivo não suportado para {}: {:?}",
-            manifest.name, method.format
-        ));
-    }
-
     let archive_url = method
         .url
         .as_deref()
         .ok_or_else(|| format!("O método archive de {} não define uma URL.", manifest.name))?;
+    ArchiveFormat::resolve(method.format.as_deref(), archive_url).map_err(|error| {
+        format!("Formato de arquivo inválido para {}: {error}", manifest.name)
+    })?;
     let app_data_dir = app.path().app_data_dir().map_err(|error| {
         format!("Não foi possível resolver o diretório de dados do app: {error}")
     })?;
@@ -4768,7 +4737,7 @@ async fn download_and_install_archive(
         )
     })
     .await
-    .map_err(|error| format!("A tarefa de instalação do ZIP falhou: {error}"))??;
+    .map_err(|error| format!("A tarefa de instalação do arquivo falhou: {error}"))??;
 
     let connection = open_database(&app)?;
     let install = save_install(&connection, &game_id, &target_dir.to_string_lossy(), None)?;
@@ -5306,9 +5275,16 @@ fn launch_game_inner(
         ));
     }
 
-    let command_path = command_path_for_install(&install_path, executable);
+    let command_path = if resolved_runner.kind == "command" {
+        PathBuf::from(executable)
+    } else {
+        command_path_for_install(&install_path, executable)
+    };
 
-    if !command_path.exists() && !battl_eye_replaces_main_process(&manifest) {
+    if resolved_runner.kind != "command"
+        && !command_path.exists()
+        && !battl_eye_replaces_main_process(&manifest)
+    {
         return Err(log_error_message(
             &app,
             &game_id,

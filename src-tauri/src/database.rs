@@ -639,9 +639,7 @@ pub(crate) fn finalize_playtime_session(
     })
 }
 
-pub(crate) fn mark_open_sessions_as_interrupted(
-    connection: &Connection,
-) -> Result<usize, String> {
+pub(crate) fn mark_open_sessions_as_interrupted(connection: &Connection) -> Result<usize, String> {
     connection
         .execute(
             "
@@ -844,29 +842,17 @@ mod tests {
         assert_eq!(session.game_id, "ravenquest");
         assert_eq!(session.process_id, Some(12345));
 
-        let finalized = finalize_playtime_session(
-            &connection,
-            session.id,
-            &timestamp,
-            3600,
-            Some(0),
-            "normal",
-        )
-        .expect("finalize session");
+        let finalized =
+            finalize_playtime_session(&connection, session.id, &timestamp, 3600, Some(0), "normal")
+                .expect("finalize session");
 
         assert!(finalized.ended_at.is_some());
         assert_eq!(finalized.duration_seconds, Some(3600));
         assert_eq!(finalized.exit_code, Some(0));
         assert_eq!(finalized.end_reason, Some("normal".to_string()));
 
-        let second_finalize = finalize_playtime_session(
-            &connection,
-            session.id,
-            &timestamp,
-            7200,
-            Some(0),
-            "normal",
-        );
+        let second_finalize =
+            finalize_playtime_session(&connection, session.id, &timestamp, 7200, Some(0), "normal");
         assert!(second_finalize.is_err());
     }
 
@@ -908,8 +894,10 @@ mod tests {
 
         let session = create_playtime_session(&connection, "ravenquest", None, None, &timestamp)
             .expect("create open session");
-        assert!(update_playtime_session_progress(&connection, session.id, 45)
-            .expect("persist heartbeat"));
+        assert!(
+            update_playtime_session_progress(&connection, session.id, 45)
+                .expect("persist heartbeat")
+        );
 
         let open_before = get_open_sessions(&connection).expect("get open sessions before");
         assert_eq!(open_before.len(), 1);
@@ -926,10 +914,7 @@ mod tests {
         assert_eq!(sessions[0].end_reason, Some("interrupted".to_string()));
         assert_eq!(sessions[0].duration_seconds, Some(45));
         let expected_end = (timestamp.parse::<i64>().unwrap() + 45).to_string();
-        assert_eq!(
-            sessions[0].ended_at.as_deref(),
-            Some(expected_end.as_str())
-        );
+        assert_eq!(sessions[0].ended_at.as_deref(), Some(expected_end.as_str()));
     }
 
     #[test]
@@ -946,15 +931,8 @@ mod tests {
             timestamp,
         )
         .expect("create first session");
-        finalize_playtime_session(
-            &connection,
-            first.id,
-            "1700000120",
-            120,
-            Some(0),
-            "normal",
-        )
-        .expect("finalize first session");
+        finalize_playtime_session(&connection, first.id, "1700000120", 120, Some(0), "normal")
+            .expect("finalize first session");
 
         let second = create_playtime_session(
             &connection,
@@ -983,8 +961,8 @@ mod tests {
         )
         .expect("create open session");
 
-        let summary = get_playtime_summary(&connection, "ravenquest")
-            .expect("calculate playtime summary");
+        let summary =
+            get_playtime_summary(&connection, "ravenquest").expect("calculate playtime summary");
 
         assert_eq!(summary.total_seconds, 420);
         assert_eq!(summary.completed_sessions, 2);

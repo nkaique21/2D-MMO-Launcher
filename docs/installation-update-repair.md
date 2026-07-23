@@ -30,6 +30,21 @@
 
 ## Archive
 
+Formatos atuais:
+
+- `zip`;
+- `tar`;
+- `tar.gz` e alias `tgz`;
+- `tar.bz2` e aliases `tbz2`/`tbz`.
+
+O campo `format` é recomendado. Quando ausente, o backend tenta inferir pela
+extensão da URL, ignorando query string e fragmento. A resolução e a extração
+ficam centralizadas em `archive.rs`, para que formatos futuros não criem
+condicionais espalhadas pelo instalador.
+
+Arquivos TAR aceitam somente diretórios e arquivos regulares. Links simbólicos,
+hard links e arquivos especiais são recusados por segurança.
+
 Fluxo:
 
 1. baixar em background;
@@ -115,3 +130,7 @@ aplicação, conclusão e erro.
 
 Logs por arquivo bem-sucedido devem ser evitados em catálogos grandes.
 Manter checkpoints agregados e detalhes para falhas/retries.
+
+### Downloads de arquivos grandes
+
+Downloads de instaladores e archives usam um cliente HTTP separado, com timeout apenas para o estabelecimento da conexão. Não existe timeout total fixo para o corpo do arquivo, porque pacotes grandes podem levar mais de 60 segundos em conexões válidas. O cliente envia um `User-Agent` identificável e aceita conteúdo binário genérico. Cabeçalhos adicionais específicos de um provedor continuam podendo ser definidos em `installation.methods[].headers` no manifesto.

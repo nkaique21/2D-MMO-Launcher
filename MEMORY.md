@@ -120,6 +120,9 @@ Não é um changelog.
 
 ## Instalação por archive
 
+- O formato é resolvido em uma camada única, por `format` explícito ou pela extensão da URL quando o campo é omitido.
+- Formatos atuais: `zip`, `tar`, `tar.gz`/`tgz` e `tar.bz2`/`tbz2`.
+- Novos formatos devem ser adicionados nessa camada, sem condicionais espalhadas pelo fluxo de instalação.
 - Extração deve rejeitar caminho absoluto e travessia.
 - Pacotes podem declarar remoção de diretório superior.
 - Executável precisa ser validado antes da aplicação.

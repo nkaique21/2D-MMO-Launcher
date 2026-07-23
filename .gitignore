@@ -1,14 +1,43 @@
+# Dependências e builds
 node_modules/
 dist/
-dist-ssr/
-*.local
-
-# Tauri / Rust
+target/
 src-tauri/target/
-src-tauri/gen/
 
-# Editor / OS
-.DS_Store
+# Ambiente e IDE
+.env
+.env.*
+!.env.example
 .vscode/
+.idea/
 *.swp
-AGENTS.md
+*.swo
+
+# Logs, bancos e arquivos locais
+*.log
+*.sqlite
+*.sqlite3
+*.db
+.DS_Store
+
+# Artefatos locais do launcher
+compat-data/
+downloads/
+updates/
+games/
+runners/
+install-staging/
+
+# Contexto e instruções locais para agentes de IA
+/AGENTS.md
+/agents.md
+/PROJECT.md
+/MEMORY.md
+/STATE.md
+/MIGRATION.md
+/CONTENTS.md
+/docs/archive/
+/CLAUDE.md
+/.cline/
+/.codex/
+/.cursor/rules/

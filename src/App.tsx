@@ -1554,7 +1554,7 @@ function App() {
               </section>
 
               {(actionMessage || actionError) && (
-                <button className={`pointer-events-auto max-w-full truncate rounded-xl border bg-black/55 px-4 py-2.5 text-xs backdrop-blur-xl ${
+                <button className={`pointer-events-auto max-h-32 max-w-[min(52rem,calc(100vw-2rem))] overflow-y-auto whitespace-pre-wrap break-words rounded-xl border bg-black/55 px-4 py-2.5 text-left text-xs leading-5 backdrop-blur-xl ${
                   actionError
                     ? 'border-red-300/25 text-red-100'
                     : 'border-white/10 text-white/65'

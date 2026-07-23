@@ -3,36 +3,36 @@
 ## Etapa atual
 
 ### Objetivo
-Separar o catálogo oficial em um repositório remoto, mantendo cache local e fallback embutido.
+Generalizar a instalação por archive e validar o Tibia distribuído em TAR.GZ.
 
 ### Estado
-- implementação concluída; aguardando validação no Tauri real
+- implementação concluída; aguardando compilação Rust e teste real no Tauri
 
 ### Implementado
-- módulo `src-tauri/src/catalog.rs`;
-- endpoint oficial `nkaique21/2D-MMO-Launcher-Catalog`;
-- cache em staging e ativação transacional;
-- fallback para manifestos empacotados;
-- background refresh no startup;
-- atualização manual e status no drawer;
-- eventos `catalog-updated` e `catalog-update-failed`;
-- `schemaVersion: 1` para manifestos remotos;
-- manifestos embutidos incluídos como resources do bundle;
-- documentação e ADR do catálogo.
+- módulo `src-tauri/src/archive.rs` para resolução e extração centralizadas;
+- suporte a `zip`, `tar`, `tar.gz`/`tgz` e `tar.bz2`/`tbz2`;
+- inferência por extensão quando `format` não é informado;
+- aliases normalizados e erro com lista de formatos aceitos;
+- staging e `stripTopLevelDir` preservados para todos os formatos;
+- permissões Unix restauradas quando disponíveis;
+- TAR restrito a arquivos regulares e diretórios;
+- recusa de path traversal, paths absolutos, links e arquivos especiais;
+- testes unitários da resolução de formatos;
+- documentação atualizada.
 
 ### Validação automatizada
-- [ ] `npm run build`
 - [ ] `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`
 - [ ] `cargo check --manifest-path src-tauri/Cargo.toml`
 - [ ] `cargo test --manifest-path src-tauri/Cargo.toml`
+- [ ] `npm run build`
 - [ ] `git diff --check`
 
 ### Checkpoint manual
-1. Criar e publicar o repositório `2D-MMO-Launcher-Catalog`.
-2. Abrir o Tauri com internet e confirmar `Cache remoto oficial`.
-3. Alterar `catalogVersion`, fazer push e clicar `Atualizar`.
-4. Desconectar a internet e confirmar que o catálogo cacheado continua abrindo.
-5. Remover temporariamente o cache e confirmar fallback embutido offline.
+1. Publicar o manifesto do Tibia com `format: "tar.gz"`.
+2. Atualizar o catálogo no launcher.
+3. Baixar e instalar o Tibia.
+4. Confirmar que `Tibia` foi encontrado após remover a pasta superior.
+5. Abrir e fechar o jogo, conferindo processo e tempo jogado.
 
 ### Próximo passo
-Após validação, fechar a estabilização do MVP e criar a tag `v0.1.0`.
+Após o teste real, registrar o Tibia como validação do fluxo genérico e fechar a estabilização do MVP.

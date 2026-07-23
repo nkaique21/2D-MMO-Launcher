@@ -400,6 +400,16 @@ pub(crate) fn resolve_runner(
         return Err("Runner solicitado não pode ser vazio.".to_string());
     }
 
+    if normalized_runner == "command" {
+        return Ok(ResolvedRunner {
+            id: "system-command".to_string(),
+            kind: "command".to_string(),
+            label: "Comando do sistema".to_string(),
+            source: "PATH".to_string(),
+            path: None,
+        });
+    }
+
     let runners = discover_runners(app)?;
 
     if let Some(runner) = runners.iter().find(|runner| {
@@ -481,6 +491,34 @@ pub(crate) fn build_runner_command(
             envs: Vec::new(),
             unset_envs: Vec::new(),
         }),
+        "command" => {
+            let command_name = executable_path.to_string_lossy();
+            let program = if executable_path.is_absolute() {
+                if !path_is_executable(executable_path) {
+                    return Err(format!(
+                        "O comando absoluto '{}' não existe ou não é executável.",
+                        executable_path.display()
+                    ));
+                }
+                executable_path.to_path_buf()
+            } else {
+                find_in_path(&command_name).ok_or_else(|| {
+                    format!(
+                        "O comando '{}' exigido pelo jogo não foi encontrado no PATH.",
+                        command_name
+                    )
+                })?
+            };
+
+            Ok(RunnerCommand {
+                runner_kind: runner.kind.clone(),
+                program,
+                args: launch_args.to_vec(),
+                working_dir: install_path.to_path_buf(),
+                envs: Vec::new(),
+                unset_envs: Vec::new(),
+            })
+        }
         "wine" => {
             let runner_path = runner.path.as_ref().ok_or_else(|| {
                 format!(

@@ -82,7 +82,7 @@ Detalhes: `docs/architecture.md`.
 
 - Instalação existente.
 - Instalador Windows.
-- Archive ZIP gerenciado.
+- Archives gerenciados: ZIP, TAR, TAR.GZ/TGZ e TAR.BZ2/TBZ2.
 - Download em background com retry.
 - Extração em staging e proteção contra path traversal.
 - Validação de executável e permissão no Linux.

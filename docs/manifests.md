@@ -67,13 +67,17 @@ Métodos previstos ou atuais:
 Campos dependem do método, incluindo:
 
 - URL;
-- formato;
+- formato (`zip`, `tar`, `tar.gz`/`tgz` ou `tar.bz2`/`tbz2`);
 - headers;
 - runner;
 - prefixo compatível;
 - diretório alvo;
 - remoção de pasta superior;
 - auto-launch.
+
+Quando `format` não é informado, o launcher tenta inferi-lo pela extensão da
+URL. Declarar o formato explicitamente continua preferível para URLs sem nome de
+arquivo estável.
 
 ## Update
 

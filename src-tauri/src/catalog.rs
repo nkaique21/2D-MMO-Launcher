@@ -138,14 +138,12 @@ fn write_metadata(app: &tauri::AppHandle, metadata: &CatalogMetadata) -> Result<
 fn is_safe_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 80
-        && value
-            .chars()
-            .all(|character| {
-                character.is_ascii_lowercase()
-                    || character.is_ascii_digit()
-                    || character == '-'
-                    || character == '_'
-            })
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || character == '-'
+                || character == '_'
+        })
 }
 
 fn is_safe_relative_path(value: &str) -> bool {
@@ -165,14 +163,13 @@ fn is_safe_relative_path(value: &str) -> bool {
         return false;
     }
 
-    path.components().all(|component| {
-        matches!(component, Component::Normal(_) | Component::CurDir)
-    })
+    path.components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
 }
 
 fn validate_https_url(value: &str, field: &str) -> Result<(), String> {
-    let url = Url::parse(value)
-        .map_err(|error| format!("URL inválida em {field}: {value} ({error})"))?;
+    let url =
+        Url::parse(value).map_err(|error| format!("URL inválida em {field}: {value} ({error})"))?;
 
     if url.scheme() != "https" {
         return Err(format!("A URL de {field} precisa usar HTTPS: {value}"));
@@ -207,7 +204,10 @@ fn validate_remote_manifest(manifest: &GameManifest, expected_id: &str) -> Resul
     }
 
     if !is_safe_id(&manifest.id) {
-        return Err(format!("ID de jogo inválido no catálogo remoto: {}", manifest.id));
+        return Err(format!(
+            "ID de jogo inválido no catálogo remoto: {}",
+            manifest.id
+        ));
     }
 
     if manifest.name.trim().is_empty() {
@@ -215,16 +215,16 @@ fn validate_remote_manifest(manifest: &GameManifest, expected_id: &str) -> Resul
     }
 
     if manifest.launch.runner.trim().is_empty() {
-        return Err(format!("O manifesto {} não define launch.runner.", manifest.id));
+        return Err(format!(
+            "O manifesto {} não define launch.runner.",
+            manifest.id
+        ));
     }
 
     validate_optional_relative_path(manifest.launch.executable.as_deref(), "launch.executable")?;
 
     if let Some(battl_eye) = manifest.launch.battl_eye.as_ref() {
-        validate_optional_relative_path(
-            Some(&battl_eye.executable),
-            "launch.battlEye.executable",
-        )?;
+        validate_optional_relative_path(Some(&battl_eye.executable), "launch.battlEye.executable")?;
         validate_optional_relative_path(
             battl_eye.working_dir.as_deref(),
             "launch.battlEye.workingDir",
@@ -246,18 +246,9 @@ fn validate_remote_manifest(manifest: &GameManifest, expected_id: &str) -> Resul
         validate_https_url(url, "update.manifestUrl")?;
     }
 
-    validate_optional_relative_path(
-        manifest.update.executable.as_deref(),
-        "update.executable",
-    )?;
-    validate_optional_relative_path(
-        manifest.update.working_dir.as_deref(),
-        "update.workingDir",
-    )?;
-    validate_optional_relative_path(
-        manifest.update.target_dir.as_deref(),
-        "update.targetDir",
-    )?;
+    validate_optional_relative_path(manifest.update.executable.as_deref(), "update.executable")?;
+    validate_optional_relative_path(manifest.update.working_dir.as_deref(), "update.workingDir")?;
+    validate_optional_relative_path(manifest.update.target_dir.as_deref(), "update.targetDir")?;
 
     for required_file in &manifest.verification.required_files {
         if !is_safe_relative_path(required_file) {
@@ -329,7 +320,9 @@ fn resolve_remote_asset_url(catalog_url: &Url, value: &str, field: &str) -> Resu
 
     if let Ok(url) = Url::parse(trimmed) {
         if url.scheme() != "https" {
-            return Err(format!("Asset remoto precisa usar HTTPS em {field}: {trimmed}"));
+            return Err(format!(
+                "Asset remoto precisa usar HTTPS em {field}: {trimmed}"
+            ));
         }
 
         return Ok(url.to_string());
@@ -347,10 +340,7 @@ fn resolve_remote_asset_url(catalog_url: &Url, value: &str, field: &str) -> Resu
         .map_err(|error| format!("Não foi possível resolver asset {trimmed}: {error}"))
 }
 
-fn normalize_remote_assets(
-    manifest: &mut GameManifest,
-    catalog_url: &Url,
-) -> Result<(), String> {
+fn normalize_remote_assets(manifest: &mut GameManifest, catalog_url: &Url) -> Result<(), String> {
     manifest.assets.banner =
         resolve_remote_asset_url(catalog_url, &manifest.assets.banner, "assets.banner")?;
     manifest.assets.icon =
@@ -674,7 +664,10 @@ fn refresh_remote_catalog_inner(
         validate_remote_manifest(&manifest, &entry.id)?;
         normalize_remote_assets(&mut manifest, &catalog_url)?;
         let serialized = serde_json::to_vec_pretty(&manifest).map_err(|error| {
-            format!("Não foi possível serializar manifesto de {}: {error}", entry.id)
+            format!(
+                "Não foi possível serializar manifesto de {}: {error}",
+                entry.id
+            )
         })?;
         fs::write(
             staging_manifests.join(format!("{}.json", entry.id)),
@@ -719,8 +712,7 @@ pub(crate) fn spawn_background_refresh(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_safe_id, is_safe_relative_path, validate_catalog_index, CatalogGameEntry,
-        CatalogIndex,
+        is_safe_id, is_safe_relative_path, validate_catalog_index, CatalogGameEntry, CatalogIndex,
     };
 
     #[test]
