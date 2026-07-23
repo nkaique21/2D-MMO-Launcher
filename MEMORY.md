@@ -15,10 +15,6 @@ Não é um changelog.
 - Update completo não deve bloquear todo clique em `Jogar`.
 - Processamento externo longo não deve bloquear a thread da UI.
 - Downloads e aplicações destrutivas devem usar staging e validação.
-- Sessões persistidas são a fonte única do tempo jogado; não manter contador
-  acumulado paralelo.
-- Somente o processo principal efetivo do jogo gera sessão de tempo jogado.
-- Nunca manter lock enquanto aguarda `Child::wait()`.
 
 ## Ambiente real
 
@@ -42,6 +38,19 @@ Não é um changelog.
 - `verification.checksums` aceita CRC32 validado pelo backend.
 - `update.strategy` suporta `externalLauncher` e `remoteManifest`.
 
+## Catálogo oficial
+
+- O catálogo oficial vive no repositório separado `2D-MMO-Launcher-Catalog`.
+- Endpoint padrão usa `raw.githubusercontent.com` na branch `main`.
+- Cache remoto válido vence os manifestos embutidos.
+- Manifestos embutidos permanecem fallback offline e de recuperação.
+- Atualização baixa o conjunto completo para staging e ativa de forma transacional.
+- Falha remota preserva o último cache válido e registra o erro em metadata.
+- Catálogo e manifestos remotos usam `schemaVersion: 1`.
+- URLs externas precisam usar HTTPS; paths absolutos e travessia são rejeitados.
+- Assets remotos não são cacheados nesta etapa.
+- O repositório de catálogo é uma superfície de segurança crítica.
+
 ## Banco
 
 - Persistência foi extraída para `src-tauri/src/database.rs`.
@@ -51,20 +60,6 @@ Não é um changelog.
 - Bancos futuros desconhecidos são rejeitados.
 - A adoção de banco legado foi validada preservando instalações e settings.
 - Tabelas atuais: `installs`, `game_settings`, `runners`, `playtime_sessions`.
-
-## Processos e tempo jogado
-
-- `ProcessManager` fica no estado Tauri e identifica execuções por
-  `execution_id`, não somente por PID.
-- Launch duplicado é bloqueado durante `starting` e `running`.
-- A sessão SQLite nasce somente depois de spawn bem-sucedido.
-- Instaladores, updaters e BattlEye auxiliar não contam como jogo.
-- BattlEye em `launchMode: main` faz parte do processo principal rastreado.
-- Sessões ativas persistem heartbeat de duração a cada 15 segundos.
-- Sessões abertas deixadas por crash/reboot são encerradas como `interrupted`,
-  preservando somente a duração do último heartbeat conhecido.
-- O monitoramento acompanha o `Child` retornado pelo runner. Runners que
-  desacoplam precisam de teste real.
 
 ## Runners
 
@@ -143,6 +138,14 @@ Não é um changelog.
 - Configurações locais do RavenQuest persistiram e restauraram defaults.
 - Menu escuro de seleção ficou legível no WebKitGTK.
 - Proton-GE gerenciado foi instalado, removido e reinstalado com sucesso.
+
+## Processos e tempo jogado
+
+- Somente o processo principal efetivo conta tempo jogado.
+- Instaladores, updaters e processos auxiliares não criam sessão.
+- RavenQuest em `launchMode: main` conta o processo BattlEye efetivo.
+- Sessões recebem checkpoints periódicos; recuperação após crash preserva apenas o último tempo confirmado.
+- O usuário validou o rastreamento com os runners reais do projeto.
 
 ## Armadilhas conhecidas
 

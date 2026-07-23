@@ -16,6 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
+mod catalog;
 mod database;
 mod managed_runners;
 mod runners;
@@ -30,6 +31,8 @@ use rusqlite::Connection;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GameManifest {
+    #[serde(default = "default_manifest_schema_version")]
+    schema_version: u32,
     id: String,
     name: String,
     description: String,
@@ -191,6 +194,10 @@ struct RemotePlannedFile {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_manifest_schema_version() -> u32 {
+    1
 }
 
 const HTTP_TIMEOUT_SECONDS: u64 = 60;
@@ -431,16 +438,6 @@ fn emit_install_flow_progress(app: &tauri::AppHandle, game_id: &str, status: &st
             message: message.to_string(),
         },
     );
-}
-
-fn manifests_dir() -> Result<PathBuf, String> {
-    let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
-
-    if current_dir.join("manifests").is_dir() {
-        return Ok(current_dir.join("manifests"));
-    }
-
-    Ok(current_dir.join("src-tauri").join("manifests"))
 }
 
 fn open_database(app: &tauri::AppHandle) -> Result<Connection, String> {
@@ -826,10 +823,11 @@ fn apply_game_settings_to_manifest(manifest: &mut GameManifest, settings: &GameS
 }
 
 fn effective_manifest_and_settings(
+    app: &tauri::AppHandle,
     connection: &Connection,
     game_id: &str,
 ) -> Result<(GameManifest, GameSettings), String> {
-    let mut manifest = get_manifest(game_id)?;
+    let mut manifest = get_manifest(app, game_id)?;
     let settings = get_game_settings_record(connection, game_id)?;
     apply_game_settings_to_manifest(&mut manifest, &settings);
 
@@ -875,8 +873,8 @@ fn open_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn get_manifest(game_id: &str) -> Result<GameManifest, String> {
-    list_games()?
+fn get_manifest(app: &tauri::AppHandle, game_id: &str) -> Result<GameManifest, String> {
+    catalog::load_active_games(app)?
         .into_iter()
         .find(|game| game.id == game_id)
         .ok_or_else(|| format!("Manifesto não encontrado para o jogo {game_id}."))
@@ -4089,30 +4087,22 @@ fn greet(name: &str) -> String {
 }
 
 #[tauri::command]
-fn list_games() -> Result<Vec<GameManifest>, String> {
-    let mut games = Vec::new();
-    let dir = manifests_dir()?;
+fn get_catalog_status(app: tauri::AppHandle) -> Result<catalog::CatalogStatus, String> {
+    catalog::get_status(&app)
+}
 
-    let entries = fs::read_dir(&dir).map_err(|error| error.to_string())?;
+#[tauri::command]
+async fn refresh_catalog(app: tauri::AppHandle) -> Result<catalog::CatalogStatus, String> {
+    let refresh_app = app.clone();
 
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let path = entry.path();
+    tauri::async_runtime::spawn_blocking(move || catalog::refresh_remote_catalog(&refresh_app))
+        .await
+        .map_err(|error| format!("A tarefa de atualização do catálogo falhou: {error}"))?
+}
 
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-
-        let content = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        let manifest = serde_json::from_str::<GameManifest>(&content)
-            .map_err(|error| format!("Manifesto inválido em {}: {error}", path.display()))?;
-
-        games.push(manifest);
-    }
-
-    games.sort_by(|left, right| left.name.cmp(&right.name));
-
-    Ok(games)
+#[tauri::command]
+fn list_games(app: tauri::AppHandle) -> Result<Vec<GameManifest>, String> {
+    catalog::load_active_games(&app)
 }
 
 #[tauri::command]
@@ -4121,7 +4111,7 @@ fn verify_game_install(
     game_id: String,
 ) -> Result<InstallVerificationResult, String> {
     let game_id = game_id.trim().to_string();
-    let manifest = get_manifest(&game_id)?;
+    let manifest = get_manifest(&app, &game_id)?;
     let connection = open_database(&app)?;
     let install = get_install(&connection, &game_id)?;
     let install_path = PathBuf::from(&install.install_path);
@@ -4406,7 +4396,7 @@ fn list_game_playtime_sessions(
 #[tauri::command]
 fn get_game_settings(app: tauri::AppHandle, game_id: String) -> Result<GameSettings, String> {
     let game_id = game_id.trim().to_string();
-    get_manifest(&game_id)?;
+    get_manifest(&app, &game_id)?;
     let connection = open_database(&app)?;
 
     get_game_settings_record(&connection, &game_id)
@@ -4420,7 +4410,7 @@ fn save_game_settings(
     env_overrides: HashMap<String, String>,
 ) -> Result<GameSettings, String> {
     let game_id = game_id.trim().to_string();
-    get_manifest(&game_id)?;
+    get_manifest(&app, &game_id)?;
     let (runner_override, env_overrides) =
         normalize_game_settings(&game_id, runner_override, env_overrides)?;
 
@@ -4440,7 +4430,7 @@ fn save_game_settings(
 #[tauri::command]
 fn reset_game_settings(app: tauri::AppHandle, game_id: String) -> Result<GameSettings, String> {
     let game_id = game_id.trim().to_string();
-    get_manifest(&game_id)?;
+    get_manifest(&app, &game_id)?;
     let connection = open_database(&app)?;
     database::reset_game_settings(&connection, &game_id)
 }
@@ -4516,7 +4506,7 @@ fn download_and_run_installer(
     )?;
 
     let manifest =
-        get_manifest(&game_id).map_err(|error| log_error_message(&app, &game_id, error))?;
+        get_manifest(&app, &game_id).map_err(|error| log_error_message(&app, &game_id, error))?;
     let installer = manifest
         .installation
         .methods
@@ -4711,7 +4701,7 @@ async fn download_and_install_archive(
         return Err("ID do jogo não pode ser vazio.".to_string());
     }
 
-    let manifest = get_manifest(&game_id)?;
+    let manifest = get_manifest(&app, &game_id)?;
     let method = manifest
         .installation
         .methods
@@ -4824,7 +4814,7 @@ fn run_game_update(app: tauri::AppHandle, game_id: String) -> Result<LaunchResul
         open_database(&app).map_err(|error| log_error_message(&app, &game_id, error))?;
     let install = get_install(&connection, &game_id)
         .map_err(|error| log_error_message(&app, &game_id, error))?;
-    let (manifest, settings) = effective_manifest_and_settings(&connection, &game_id)
+    let (manifest, settings) = effective_manifest_and_settings(&app, &connection, &game_id)
         .map_err(|error| log_error_message(&app, &game_id, error))?;
     let install =
         reconcile_registered_install_path(&app, &connection, &game_id, &manifest, install)
@@ -4961,7 +4951,7 @@ async fn install_game_from_remote_manifest(
         return Err("ID do jogo não pode ser vazio.".to_string());
     }
 
-    let manifest = get_manifest(&game_id)?;
+    let manifest = get_manifest(&app, &game_id)?;
 
     if manifest.update.strategy != "remoteManifest" {
         return Err(format!(
@@ -5130,7 +5120,7 @@ async fn run_game_remote_update(
         "Lendo manifesto local do jogo...",
         Some(&attempt_log_path),
     )?;
-    let manifest = get_manifest(&game_id).map_err(|error| {
+    let manifest = get_manifest(&app, &game_id).map_err(|error| {
         log_and_emit_update_error(
             &app,
             &game_id,
@@ -5254,7 +5244,7 @@ fn launch_game_inner(
         open_database(&app).map_err(|error| log_error_message(&app, &game_id, error))?;
     let install = get_install(&connection, &game_id)
         .map_err(|error| log_error_message(&app, &game_id, error))?;
-    let (manifest, settings) = effective_manifest_and_settings(&connection, &game_id)
+    let (manifest, settings) = effective_manifest_and_settings(&app, &connection, &game_id)
         .map_err(|error| log_error_message(&app, &game_id, error))?;
     let install =
         reconcile_registered_install_path(&app, &connection, &game_id, &manifest, install)
@@ -5412,11 +5402,15 @@ pub fn run() {
                 );
             }
 
+            catalog::spawn_background_refresh(app.handle().clone());
+
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            get_catalog_status,
+            refresh_catalog,
             list_games,
             list_installs,
             get_game_activity,

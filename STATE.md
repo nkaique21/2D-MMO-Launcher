@@ -3,42 +3,36 @@
 ## Etapa atual
 
 ### Objetivo
-Validar no Tauri real a camada genérica de atividade e tempo jogado.
+Separar o catálogo oficial em um repositório remoto, mantendo cache local e fallback embutido.
 
 ### Estado
-- implementação concluída;
-- frontend TypeScript/Vite validado;
-- validação Rust pendente no ambiente do usuário porque o sandbox não possui
-  `cargo`/`rustc`.
+- implementação concluída; aguardando validação no Tauri real
 
 ### Implementado
-- migration 4 e tabela `playtime_sessions`;
-- criação, finalização, recuperação, listagem e resumo de sessões;
-- `ProcessManager` no estado Tauri;
-- estados `starting`, `running`, `exited` e `failed`;
-- bloqueio de launch duplicado;
-- monitoramento do processo principal fora de locks;
-- eventos `game-process-state` e `game-activity-updated`;
-- comandos de atividade e histórico;
-- tempo acumulado e sessão ativa na interface.
+- módulo `src-tauri/src/catalog.rs`;
+- endpoint oficial `nkaique21/2D-MMO-Launcher-Catalog`;
+- cache em staging e ativação transacional;
+- fallback para manifestos empacotados;
+- background refresh no startup;
+- atualização manual e status no drawer;
+- eventos `catalog-updated` e `catalog-update-failed`;
+- `schemaVersion: 1` para manifestos remotos;
+- manifestos embutidos incluídos como resources do bundle;
+- documentação e ADR do catálogo.
 
-### Validação concluída
-- [x] `tsc`
-- [x] build Vite
+### Validação automatizada
+- [ ] `npm run build`
 - [ ] `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`
 - [ ] `cargo check --manifest-path src-tauri/Cargo.toml`
 - [ ] `cargo test --manifest-path src-tauri/Cargo.toml`
-- [ ] teste no Tauri com jogo nativo
-- [ ] teste no Tauri com UMU/Proton
+- [ ] `git diff --check`
 
 ### Checkpoint manual
-1. Rodar os três comandos Cargo.
-2. Abrir `npm run tauri dev`.
-3. Iniciar Medivia ou PokeMMO e confirmar `Em execução`/`Jogando`.
-4. Tentar clicar novamente e confirmar bloqueio do launch duplicado.
-5. Fechar o jogo e confirmar aumento do tempo acumulado.
-6. Repetir com RavenQuest ou Archlight para validar o lifecycle do runner.
+1. Criar e publicar o repositório `2D-MMO-Launcher-Catalog`.
+2. Abrir o Tauri com internet e confirmar `Cache remoto oficial`.
+3. Alterar `catalogVersion`, fazer push e clicar `Atualizar`.
+4. Desconectar a internet e confirmar que o catálogo cacheado continua abrindo.
+5. Remover temporariamente o cache e confirmar fallback embutido offline.
 
 ### Próximo passo
-Após validação real, corrigir qualquer runner que se desacople do `Child` ou
-avançar para histórico detalhado de sessões na UI.
+Após validação, fechar a estabilização do MVP e criar a tag `v0.1.0`.

@@ -37,6 +37,7 @@ src/
 src-tauri/
 ├── manifests/*.json
 ├── src/lib.rs
+├── src/catalog.rs
 ├── src/database.rs
 ├── src/runners.rs
 ├── src/managed_runners.rs
@@ -47,6 +48,7 @@ src-tauri/
 - `tauri.ts`: comandos/eventos Tauri.
 - `manifest.ts`: tipos TypeScript.
 - `lib.rs`: comandos e orquestração.
+- `catalog.rs`: catálogo remoto, cache, fallback e validação.
 - `database.rs`: migrations, modelos e queries.
 - `runners.rs`: detecção, resolução e comandos.
 - `managed_runners.rs`: lifecycle de runners baixados.
@@ -58,7 +60,10 @@ Detalhes: `docs/architecture.md`.
 
 ### Catálogo e biblioteca
 
-- Catálogo vindo dos manifestos.
+- Catálogo oficial remoto em repositório separado.
+- Cache local transacional e fallback para manifestos embutidos.
+- Atualização automática em background e ação manual no drawer.
+- Validação de schema, IDs, HTTPS, tamanho e paths seguros.
 - Estado instalado vindo do SQLite.
 - Localizar instalação existente.
 - Abrir pasta e desvincular sem apagar arquivos.
@@ -72,18 +77,6 @@ Detalhes: `docs/architecture.md`.
 - Ambiente do manifesto + override local.
 - stdout/stderr em `logs/<game_id>/runner.log`.
 - BattlEye opcional, inclusive como processo principal.
-
-### Processos e tempo jogado
-
-- Estado genérico `starting`, `running`, `exited` e `failed` por jogo.
-- Bloqueio de launch duplicado enquanto o processo está ativo.
-- PID, runner, execução interna e sessão associados em memória.
-- Monitoramento do `Child` em thread dedicada, sem bloquear a UI ou manter lock.
-- Sessões persistidas no SQLite após spawn bem-sucedido.
-- Finalização com duração, exit code e motivo.
-- Sessões órfãs recuperadas como `interrupted` no próximo startup.
-- Tempo acumulado derivado das sessões e exibido na interface.
-- Instaladores, updaters e BattlEye auxiliar não contam como jogo.
 
 ### Instalação
 
@@ -119,6 +112,14 @@ Detalhes: `docs/architecture.md`.
 - Variáveis de ambiente por jogo.
 - Defaults do manifesto.
 - Persistência e restauração de padrões.
+
+### Processos e tempo jogado
+
+- Estado genérico de processo por jogo.
+- Bloqueio de launch duplicado enquanto a execução está ativa.
+- Sessões persistidas e tempo acumulado no SQLite.
+- Checkpoint periódico e recuperação de sessões interrompidas.
+- Fluxo validado com runners nativo, Proton/UMU e RavenQuest/BattlEye.
 
 ### Runners gerenciados
 
@@ -221,16 +222,16 @@ O navegador serve para debug rápido; não substitui o Tauri real.
 - Proton-GE gerenciado cobre inicialmente a release mais recente.
 - Múltiplas versões, verificação criptográfica e Wine gerenciado são evoluções.
 - Alguns jogos ainda têm manifestos incompletos.
-- Runners que se desacoplam do `Child` precisam de validação real para garantir
-  que a sessão acompanhe todo o tempo do jogo.
+- Assets do catálogo remoto ainda não possuem cache local; a UI usa fallback visual offline.
+- Assinatura criptográfica do catálogo é evolução futura.
 
 ## Roadmap resumido
 
 1. Completar manifestos restantes.
 2. Projetar reparo seguro para archive/installer.
 3. Evoluir runners gerenciados e múltiplas versões.
-4. Evoluir fila, histórico e retomada de downloads.
-5. Adicionar histórico detalhado de sessões e estatísticas na UI.
+4. Adicionar assinatura e cache opcional de assets do catálogo.
+5. Evoluir fila, histórico e retomada de downloads.
 6. Adicionar recursos opcionais: notícias, Discord RPC e Steam.
 
 Consulte `docs/README.md` para escolher o contexto temático da tarefa.

@@ -44,13 +44,26 @@ Responsável por:
 - verificação, update e reparo;
 - emissão de eventos.
 
+
+### Catálogo
+
+Responsável por:
+
+- carregar o último cache remoto válido;
+- usar manifestos embutidos como fallback;
+- atualizar o catálogo oficial em background ou sob demanda;
+- validar schema, IDs, URLs e paths;
+- ativar o conjunto completo de forma transacional.
+
+O catálogo remoto descreve jogos; não armazena estado local do usuário.
+
 ### SQLite
 
 Armazena estado local, nunca a definição canônica do jogo.
 
 ## Direção de modularização
 
-- `catalog`: manifestos e catálogo.
+- `catalog`: índice remoto, cache, fallback e manifestos.
 - `installation`: instalação registrada e reconciliação.
 - `downloader`: HTTP, retry e progresso.
 - `extractor`: formatos e segurança de caminhos.

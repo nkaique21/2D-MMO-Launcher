@@ -1,4 +1,5 @@
 export type GameManifest = {
+  schemaVersion?: number;
   id: string;
   name: string;
   description: string;
@@ -232,4 +233,15 @@ export type RunnerInstallProgress = {
   totalBytes: number;
   message: string;
   error: string | null;
+};
+
+export type CatalogStatus = {
+  activeSource: 'remote-cache' | 'embedded' | string;
+  remoteUrl: string;
+  catalogVersion: string | null;
+  generatedAt: string | null;
+  lastCheckedAt: number | null;
+  lastUpdatedAt: number | null;
+  lastError: string | null;
+  gameCount: number;
 };

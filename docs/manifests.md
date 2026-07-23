@@ -2,13 +2,16 @@
 
 ## Papel
 
-Cada arquivo em `src-tauri/manifests/*.json` descreve um jogo e suas
-possibilidades. Adicionar um jogo deve exigir principalmente manifesto e assets.
+Cada manifesto descreve um jogo e suas possibilidades. A fonte principal pode
+vir do catálogo oficial remoto; `src-tauri/manifests/*.json` permanece como
+fallback embutido no bundle. Adicionar um jogo deve exigir principalmente
+manifesto e assets.
 
 ## Áreas conceituais
 
 ```json
 {
+  "schemaVersion": 1,
   "id": "...",
   "name": "...",
   "description": "...",
@@ -112,3 +115,15 @@ O backend deve rejeitar:
 - Um campo deve representar comportamento reutilizável.
 - Valores específicos de máquina devem ser override local quando possível.
 - Não mover configuração local do usuário para o manifesto.
+
+
+## Fonte remota
+
+O índice remoto fica no repositório `2D-MMO-Launcher-Catalog`. Cada entrada
+aponta para um manifesto e precisa declarar o mesmo `id`.
+
+O launcher aceita somente `schemaVersion: 1`, valida paths e URLs, grava todos
+os manifestos em staging e só ativa o conjunto completo após sucesso.
+
+Manifestos embutidos sem `schemaVersion` usam versão 1 por compatibilidade.
+Detalhes do fluxo estão em `docs/catalog.md`.

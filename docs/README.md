@@ -5,7 +5,8 @@ Leia somente o necessário para a tarefa.
 | Documento | Quando ler |
 |---|---|
 | `architecture.md` | limites entre frontend, Tauri, banco e serviços |
-| `manifests.md` | alterar schema, catálogo ou comportamento configurável |
+| `manifests.md` | alterar schema ou comportamento configurável dos jogos |
+| `catalog.md` | fonte remota, cache, fallback e publicação do catálogo |
 | `runners.md` | launch, Wine, Proton, UMU ou runners gerenciados |
 | `processes-playtime.md` | estado de execução, sessões e tempo acumulado |
 | `installation-update-repair.md` | instalação, download, update, verificação e reparo |

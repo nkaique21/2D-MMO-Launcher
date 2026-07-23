@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
   listGames,
+  getCatalogStatus,
+  refreshCatalog,
   listInstalls,
   listRunners,
   getGameActivity,
@@ -23,7 +25,7 @@ import {
   saveGameSettings,
   verifyGameInstall,
 } from './lib/tauri';
-import type { GameActivity, GameInstall, GameManifest, GameProcessState, GameSettings, GameUpdateProgress, InstallVerificationResult, ManagedRunnerRelease, RunnerInfo, RunnerInstallProgress } from './types/manifest';
+import type { CatalogStatus, GameActivity, GameInstall, GameManifest, GameProcessState, GameSettings, GameUpdateProgress, InstallVerificationResult, ManagedRunnerRelease, RunnerInfo, RunnerInstallProgress } from './types/manifest';
 
 type InstallationStatus = 'installed' | 'available';
 
@@ -266,6 +268,15 @@ function formatLastPlayed(timestamp: string | null | undefined) {
   });
 }
 
+function formatCatalogTimestamp(timestamp: number | null | undefined) {
+  if (!timestamp) return 'Ainda não atualizado';
+
+  return new Date(timestamp * 1000).toLocaleString('pt-BR', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  });
+}
+
 function isUpdateFinished(progress: GameUpdateProgress | null) {
   return progress?.status === 'done' || progress?.status === 'error';
 }
@@ -365,6 +376,30 @@ function App() {
   const [runnerProgress, setRunnerProgress] = useState<RunnerInstallProgress | null>(null);
   const [runnerActionId, setRunnerActionId] = useState<string | null>(null);
   const [reloadSignal, setReloadSignal] = useState(0);
+  const [catalogStatus, setCatalogStatus] = useState<CatalogStatus | null>(null);
+  const [catalogActionId, setCatalogActionId] = useState<string | null>(null);
+
+  async function refreshOfficialCatalog() {
+    setCatalogActionId('refresh');
+    setActionError(null);
+
+    try {
+      const status = await refreshCatalog();
+      const catalog = await listGames();
+      setCatalogStatus(status);
+      setManifests(catalog);
+      setSelectedGameId((currentGameId) => {
+        if (catalog.some((game) => game.id === currentGameId)) return currentGameId;
+        return catalog[0]?.id ?? null;
+      });
+      setActionMessage(`Catálogo oficial atualizado: ${status.gameCount} jogo(s), versão ${status.catalogVersion ?? 'sem versão'}.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      void getCatalogStatus().then(setCatalogStatus).catch(() => undefined);
+    } finally {
+      setCatalogActionId(null);
+    }
+  }
 
   async function refreshRunnerCatalog() {
     setRunnerActionId('catalog');
@@ -474,13 +509,14 @@ function App() {
     setIsLoading(true);
     setLoadError(null);
 
-    Promise.all([listGames(), listInstalls(), listRunners()])
-      .then(([catalog, localInstalls, detectedRunners]) => {
+    Promise.all([listGames(), listInstalls(), listRunners(), getCatalogStatus()])
+      .then(([catalog, localInstalls, detectedRunners, currentCatalogStatus]) => {
         if (!isMounted) return;
 
         setManifests(catalog);
         setInstalls(localInstalls);
         setRunners(detectedRunners);
+        setCatalogStatus(currentCatalogStatus);
         setSelectedGameId((currentGameId) => {
           const currentGameStillExists = catalog.some((game) => game.id === currentGameId);
 
@@ -506,6 +542,60 @@ function App() {
       isMounted = false;
     };
   }, [reloadSignal]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const unlistenUpdated = listen<CatalogStatus>('catalog-updated', (event) => {
+      if (!isMounted) return;
+
+      setCatalogStatus(event.payload);
+      void listGames()
+        .then((catalog) => {
+          if (!isMounted) return;
+          setManifests(catalog);
+          setSelectedGameId((currentGameId) => {
+            if (catalog.some((game) => game.id === currentGameId)) return currentGameId;
+            return catalog[0]?.id ?? null;
+          });
+        })
+        .catch((error) => console.warn('Não foi possível recarregar o catálogo atualizado.', error));
+    });
+    const unlistenFailed = listen<string>('catalog-update-failed', () => {
+      if (!isMounted) return;
+      void getCatalogStatus().then((status) => {
+        if (isMounted) setCatalogStatus(status);
+      }).catch(() => undefined);
+    });
+
+    return () => {
+      isMounted = false;
+      void unlistenUpdated.then((unlisten) => unlisten());
+      void unlistenFailed.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const timeoutId = window.setTimeout(() => {
+      void Promise.all([listGames(), getCatalogStatus()])
+        .then(([catalog, status]) => {
+          if (!isMounted) return;
+          setCatalogStatus(status);
+          setManifests(catalog);
+          setSelectedGameId((currentGameId) => {
+            if (catalog.some((game) => game.id === currentGameId)) return currentGameId;
+            return catalog[0]?.id ?? null;
+          });
+        })
+        .catch(() => undefined);
+    }, 2_500);
+
+    return () => {
+      isMounted = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, []);
 
   useEffect(() => {
     setIsSettingsOpen(false);
@@ -1557,6 +1647,28 @@ function App() {
                 ))}
               </div>
             </section>
+            <section className="mt-5 rounded-2xl border border-sky-300/15 bg-sky-500/[0.045] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.16em] text-sky-200">Catálogo oficial</p>
+                  <p className="mt-1 text-xs leading-5 text-white/50">Manifestos remotos com cache local e fallback embutido.</p>
+                </div>
+                <button className="text-xs font-bold text-sky-200/70 hover:text-sky-100 disabled:opacity-40" disabled={catalogActionId !== null} onClick={() => void refreshOfficialCatalog()} type="button">{catalogActionId === 'refresh' ? 'Atualizando...' : 'Atualizar'}</button>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-xl bg-black/20 p-3">
+                  <p className="font-black uppercase tracking-[0.12em] text-white/35">Fonte ativa</p>
+                  <p className="mt-2 font-bold text-white/75">{catalogStatus?.activeSource === 'remote-cache' ? 'Cache remoto oficial' : 'Fallback embutido'}</p>
+                </div>
+                <div className="rounded-xl bg-black/20 p-3">
+                  <p className="font-black uppercase tracking-[0.12em] text-white/35">Versão</p>
+                  <p className="mt-2 font-bold text-white/75">{catalogStatus?.catalogVersion ?? 'embutida'} • {catalogStatus?.gameCount ?? manifests.length} jogo(s)</p>
+                </div>
+              </div>
+              <p className="mt-3 text-[0.68rem] text-white/35">Última atualização válida: {formatCatalogTimestamp(catalogStatus?.lastUpdatedAt)}</p>
+              {catalogStatus?.lastError && <p className="mt-2 break-words rounded-xl border border-amber-300/10 bg-amber-500/[0.05] p-3 text-[0.68rem] leading-5 text-amber-100/65">Falha mais recente: {catalogStatus.lastError}. O launcher manteve o último catálogo válido.</p>}
+            </section>
+
             <section className="mt-5 rounded-2xl border border-violet-300/15 bg-violet-500/[0.05] p-4">
               <div className="flex items-start justify-between gap-3">
                 <div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-200">Runners gerenciados</p><p className="mt-1 text-xs leading-5 text-white/50">Instale Proton-GE sem sair do launcher.</p></div>

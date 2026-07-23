@@ -1,8 +1,16 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { GameActivity, GameInstall, GameManifest, GameSettings, GameUpdateProgress, GameUpdateResult, InstallVerificationResult, LaunchResult, ManagedRunner, ManagedRunnerRelease, PlaytimeSession, RunnerInfo } from '../types/manifest';
+import type { CatalogStatus, GameActivity, GameInstall, GameManifest, GameSettings, GameUpdateProgress, GameUpdateResult, InstallVerificationResult, LaunchResult, ManagedRunner, ManagedRunnerRelease, PlaytimeSession, RunnerInfo } from '../types/manifest';
 
 export function listGames() {
   return invoke<GameManifest[]>('list_games');
+}
+
+export function getCatalogStatus() {
+  return invoke<CatalogStatus>('get_catalog_status');
+}
+
+export function refreshCatalog() {
+  return invoke<CatalogStatus>('refresh_catalog');
 }
 
 export function listInstalls() {
